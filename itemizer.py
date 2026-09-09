@@ -46,6 +46,34 @@ HTML_TABLE_RE = re.compile(
     re.IGNORECASE | re.DOTALL
 )
 
+# GLM-OCR HTML-escapes quotes/ampersands/apostrophes even inside a plain
+# table cell (observed live: 3/4" transcribed as 3/4&quot;, and a foot-mark
+# apostrophe as the hex numeric &#x27; in the same response that used the
+# named &quot; for an inch mark — it isn't consistent about which entity
+# FORM it picks for a given character). Left undecoded, a reviewer sees the
+# raw escape sequence in the grid editor (input.value is plain text, never
+# HTML-interpreted) instead of the actual printed character.
+_NAMED_ENTITY_MAP = {"&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"', "&apos;": "'"}
+_ENTITY_RE = re.compile(
+    "|".join(re.escape(k) for k in _NAMED_ENTITY_MAP) + r"|&#x[0-9a-fA-F]+;|&#[0-9]+;"
+)
+
+
+def _decode_entities(s):
+    if not s:
+        return s
+
+    def repl(m):
+        token = m.group(0)
+        if token in _NAMED_ENTITY_MAP:
+            return _NAMED_ENTITY_MAP[token]
+        if token[:3] in ("&#x", "&#X"):
+            return chr(int(token[3:-1], 16))
+        return chr(int(token[2:-1]))  # &#NN;
+
+    return _ENTITY_RE.sub(repl, s)
+
+
 TYPE_PRIORITY = {"equation": 0, "table": 1, "text-math": 2, "text": 3}
 
 
@@ -147,7 +175,7 @@ def _html_to_markdown(html):
     md_rows = []
     for r in rows:
         cells = re.findall(r"<(?:t[dh])\b[^>]*>(.*?)</(?:t[dh])\s*>", r, re.IGNORECASE | re.DOTALL)
-        cells = [re.sub(r"<[^>]+>", "", c).strip() for c in cells]
+        cells = [_decode_entities(re.sub(r"<[^>]+>", "", c).strip()) for c in cells]
         md_rows.append("|" + "|".join("" if c is None else c.replace("|", "\\|") for c in cells) + "|")
     if len(md_rows) < 2:
         return None
@@ -344,7 +372,12 @@ def _parse_page_body(body):
             item = {"type": "table" if md else "text", "content": md if md else ev["content"],
                     "has_inline_math": False}
         else:  # pipe table
-            item = {"type": "table", "content": ev["content"], "has_inline_math": False}
+            # _html_to_markdown decodes per-cell above; a native pipe table
+            # never passes through that function, so decode the whole block
+            # here — entities have no structural meaning in a markdown table
+            # (no legitimate "&quot;" text is expected in this domain), so a
+            # blanket substitution over the raw block is safe.
+            item = {"type": "table", "content": _decode_entities(ev["content"]), "has_inline_math": False}
             if ev.get("caption") is not None:
                 item["caption"] = ev["caption"]
                 item["table_number"] = ev["table_number"]

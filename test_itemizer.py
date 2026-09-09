@@ -305,6 +305,21 @@ The value is in accordance with 21.2.1.
     check(any(it["type"] == "text" and it["content"] == "Text after." for it in up),
           "text after the unclosed table is not eaten")
 
+    # GLM-OCR HTML-escapes quotes/ampersands/apostrophes even inside a plain
+    # cell — named entities AND both numeric forms (decimal &#39;, hex
+    # &#x27;), observed live in the same response for two different
+    # characters (a foot-mark apostrophe as &#x27;, an inch mark as &quot;).
+    check(itemizer._decode_entities('3/4&quot; T&amp;G, 4&#x27;-0&quot;, 5&#39;')
+          == '3/4" T&G, 4\'-0", 5\'',
+          "_decode_entities: named entities + hex + decimal numeric forms all decoded")
+    html_entities = '<table><tr><th>A</th></tr><tr><td>3/4&quot; T&amp;G</td></tr></table>'
+    check('3/4" T&G' in itemizer._html_to_markdown(html_entities),
+          "_html_to_markdown decodes entities in cell text")
+    pipe_entities = "--- Page 1 ---\n| A |\n|---|\n| 3/4&quot; T&amp;G |\n"
+    pp = itemizer.parse_document(pipe_entities, "d2")[0]["items"]
+    check(any(it["type"] == "table" and '3/4" T&G' in it["content"] for it in pp),
+          "a native pipe table (no HTML) also gets entities decoded")
+
     check(itemizer.eq_refs("", "\\hspace{1cm} (22.2.2.4.1)")[1] == "22.2.2.4.1",
           "eq_refs: number after \\hspace{}, as in the real doc")
 
