@@ -23,6 +23,29 @@ INLINE_MATH_RE = re.compile(r"\\\(.+?\\\)|\$[^$\n]+\$")
 # A caption line: "Table 21.2.1—..." (em dash/dash/space after the number).
 TABLE_CAPTION_RE = re.compile(r"^\s*Table\s+(\d+(?:\.\d+)*)\b(.*)$", re.IGNORECASE)
 
+# Figure caption: "Fig. 22.5.1—..." / "Figure 2.1 ..." (number then dash/
+# space/period — NOT "Figure 8" the page). Matches the plan's figure band.
+FIGURE_CAPTION_RE = re.compile(
+    r"^\s*(?:Fig\.?|Figure)\s+(\d+(?:\.\d+)*)\b(.*)$", re.IGNORECASE
+)
+
+def parse_figure_caption(text):
+    """Parse caption-box OCR text into (caption_text, figure_number).
+
+    Mirrors parse_table_caption: a line starting "Fig. N.N …"/"Figure N.N …"
+    wins (full line is the caption, number extracted); otherwise the first
+    non-empty line becomes the caption with figure_number=None (manual
+    caption-box path). Whitespace-only text returns (None, None).
+    """
+    if not text or not text.strip():
+        return None, None
+    lines = [ln.strip() for ln in text.strip().splitlines()]
+    for ln in lines:
+        m = FIGURE_CAPTION_RE.match(ln)
+        if m:
+            return ln, m.group(1)
+    return lines[0], None
+
 # Equation reference markers: leading "(a)" and trailing "(22.5.1.10a)".
 # GLM-OCR emits them OUTSIDE the $...$ span: "(a) $$x$$ (22.5.1.10a)".
 EQ_LETTER_HEAD_RE = re.compile(r"^\s*\(([a-z])\)")          # "(a) ..."

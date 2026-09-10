@@ -112,6 +112,19 @@ def delete_kb(kb_id):
     return _api("DELETE", f"/api/rag/knowledge-bases/{kb_id}")
 
 
+def list_docs(kb_id):
+    """Documents in a KB: [{id, filename, …}…] (empty on any parse miss)."""
+    resp = _api("GET", f"/api/rag/knowledge-bases/{kb_id}/documents")
+    if isinstance(resp, list):
+        return resp
+    return resp.get("documents", []) if isinstance(resp, dict) else []
+
+
+def delete_doc(document_id):
+    """Delete one KB document (by its document id, not filename)."""
+    return _api("DELETE", f"/api/rag/documents/{document_id}")
+
+
 def get_or_create_kb(name):
     for kb in list_kbs():
         if kb["name"] == name:
@@ -262,6 +275,8 @@ def _section_key(it):
         return _eq_section(it["eq_num"])
     if it.get("type") == "table" and it.get("table_number"):
         return it["table_number"]
+    if it.get("type") == "figure" and it.get("figure_number"):
+        return it["figure_number"]
     k = _stmt_key(it.get("content") or "")
     if k:
         return k
@@ -370,6 +385,8 @@ def render_markdown(items):
             sec = _eq_section(it.get("eq_num"))
         if sec is None and it.get("type") == "table" and it.get("table_number"):
             sec = it["table_number"]
+        if sec is None and it.get("type") == "figure" and it.get("figure_number"):
+            sec = it["figure_number"]
         if sec is None and it.get("type") == "text":
             sec = _stmt_key(content)  # bold-marker statements sort by this too
         if sec:
@@ -387,6 +404,10 @@ def render_markdown(items):
                         break
         header_note = f"\n\n{fold}" if fold else ""
         chunk = content
+        if it.get("type") == "figure" and it.get("caption"):
+            # like tables: fold the caption in — its plain words are what the
+            # model can query-match (the GLM figure description may be terse)
+            chunk = f"{it['caption']}\n\n{content}"
         if it.get("type") == "table":
             # ONE canonical representation per table: caption + the normalized
             # readable table (clean-Unicode cells). The raw LaTeX pipe mirror
@@ -497,6 +518,11 @@ def _selftest():
              "chapter": None, "section": None, "source_name": "b.pdf",
              "table_number": "22.5.5.1", "caption": "Table 22.5.5.1—Vc",
              "content": "|$$0.66\\lambda_s\\lambda(\\rho_w)^{1/3}\\sqrt{f_{c}^{\\prime}}+\\frac{N_{u}}{6A_{g}}$$|"}))
+        (td / "b" / "b-p3-i6.json").write_text(json.dumps(
+            {"doc_id": "b", "item_id": "b-p3-i6", "page": 3, "type": "figure",
+             "chapter": None, "section": None, "source_name": "b.pdf",
+             "figure_number": "22.5.1", "caption": "Fig. 22.5.1—Frame elevations",
+             "content": "Two-bay frame under lateral load with hinge supports."}))
         (td / "a" / "junk.json").write_text("{corrupt")
         by_doc = docs_from_verified(td)
         assert set(by_doc) == {"a", "b"}, by_doc  # corrupt file skipped
@@ -535,6 +561,8 @@ def _selftest():
         assert "√(f_c′" in md_b and "(N_u)/(6A_g)" in md_b, md_b
         assert "Symbols: A_g = gross area" in md_b and "N_u = factored axial force" in md_b, md_b
         assert "lambdas" not in md_b and "rhow" not in md_b and "sqrt(" not in md_b, md_b
+        # figure: section backfilled from figure_number, caption folded in
+        assert "## page 3 figure — 22.5.1\n\nFig. 22.5.1—Frame elevations\n\nTwo-bay frame" in md_b, md_b
     # subscripts survive _math_to_text (Unicode): λ_s / ρ_w stay distinct
     # tokens — regression guard for the KB prose λ-drop bug (stripped "_"
     # used to merge them into unsegmentable lambdas/rhow)

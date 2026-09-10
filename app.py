@@ -19,8 +19,12 @@ import models  # pyright: ignore[reportMissingImports] — same-dir module
 import orchestrator  # pyright: ignore[reportMissingImports] — same-dir module
 import profiles  # pyright: ignore[reportMissingImports] — same-dir module
 import rag_uploader as rag  # pyright: ignore[reportMissingImports] — same-dir module
-from itemizer import INLINE_MATH_RE, clean_export_text, eq_refs, parse_document, parse_table_caption, pick_caption_from_band, unwrap_html_caption  # pyright: ignore[reportMissingImports] — same-dir module
-from ocr_engine import CAPTION_BAND_PROMPT, EQUATION_PROMPT, OCR_PROMPT, assemble_markdown, ocr_batch, ocr_page, parse_page_ranges, pdf_to_images, tesseract_ocr
+from itemizer import (INLINE_MATH_RE, clean_export_text, eq_refs, parse_document,
+                      parse_figure_caption, parse_table_caption, pick_caption_from_band,
+                      unwrap_html_caption)  # pyright: ignore[reportMissingImports] — same-dir module
+from ocr_engine import (CAPTION_BAND_PROMPT, EQUATION_PROMPT, FIGURE_PROMPT, OCR_PROMPT,
+                        assemble_markdown, ocr_batch, ocr_page, parse_page_ranges,
+                        pdf_to_images, tesseract_ocr)
 
 BASE = Path(__file__).resolve().parent
 VALIDATION = BASE / "validation"
@@ -215,28 +219,38 @@ def append_bbox_items(doc, page, markdown):
     return len(new_items)
 
 
-# GLM sometimes wraps drawn crops in HTML <table> markup under any prompt;
-# strip just the wrapper tags (math spans can legitimately contain other chars).
-# Table kinds keep the raw text: the wrapper may be the only structure for a
-# forced table draw (auto mode converts HTML tables properly).
-HTML_TABLE_TAG_RE = re.compile(
-    r"</?(?:table|thead|tbody|tfoot|tr|th|td)\b[^>]*>", re.IGNORECASE
-)
+# GLM sometimes wraps drawn crops in HTML markup under any prompt; strip ALL
+# tags for equation/text/figure kinds (math spans can legitimately contain
+# other chars, but never <tag>). Table kinds keep the raw text: the wrapper
+# may be the only structure for a forced table draw (auto mode converts HTML
+# tables properly).
+# ponytail: blanket tag strip — switch to a tag whitelist if a drawn crop ever
+# legitimately needs to keep literal < / > comparison operators.
+HTML_TAG_RE = re.compile(r"</?[A-Za-z][^>]*>", re.IGNORECASE)
+
+# Math delimiters GLM emits around drawn equations ($$…$$ / \…\ / $…$ / \(…\));
+# stored content is BARE LaTeX — the UI already wraps it in \[…\].
+MATH_DELIMITER_RE = re.compile(r"\$\$|\$|\\[\[\]\(\)]")
 
 
 def append_bbox_item(doc, page, text, kind):
     """Append ONE item of a forced kind from a crop's OCR text (no parsing).
 
-    kind is 'equation' | 'table' | 'text' (caller validates). Inherits
-    chapter/section from the page's latest item that carries them. Equation
-    kinds capture eq_letters/eq_num via eq_refs; text kinds flag inline math.
+    kind is 'equation' | 'table' | 'text' | 'figure' (caller validates).
+    Inherits chapter/section from the page's latest item that carries them.
+    Equation kinds capture eq_letters/eq_num via eq_refs (after delimiter
+    stripping — content is bare LaTeX); text/figure kinds flag inline math.
     Returns the new item.
     """
     target = _target_page(doc, page)
     content = text.strip()
-    if kind in ("equation", "text"):
-        # drop the HTML table wrapper GLM sometimes emits; keep the content
-        cleaned = HTML_TABLE_TAG_RE.sub(" ", content)
+    if kind in ("equation", "text", "figure"):
+        # drop ANY HTML tags GLM sometimes emits around drawn crops; equation
+        # content additionally loses the $$ / \[\] / $ / \(\) delimiters so
+        # the stored content is bare LaTeX (the UI wraps it in \[\])
+        cleaned = HTML_TAG_RE.sub(" ", content)
+        if kind == "equation":
+            cleaned = MATH_DELIMITER_RE.sub("", cleaned)
         if cleaned != content:
             content = re.sub(r"\s+", " ", cleaned).strip()
     item = {
@@ -248,9 +262,11 @@ def append_bbox_item(doc, page, text, kind):
         "chapter": None,
         "section": None,
     }
-    if kind == "text":
+    if kind in ("text", "figure"):
         item["has_inline_math"] = bool(INLINE_MATH_RE.search(content))
     if kind == "equation":
+        # delimiter strip ran BEFORE eq_refs, so the trailing "(22.5.1.10a)"
+        # and leading "(a)" markers are still captured
         letters, num = eq_refs(content, content)
         if letters is not None:
             item["eq_letters"] = letters
@@ -313,7 +329,10 @@ def apply_action(doc, item_id, action, content=None, table_spans=None, eq_num=No
                 }
                 if item.get("caption") is not None:
                     payload["caption"] = item["caption"]
-                    payload["table_number"] = item.get("table_number")
+                    if item.get("type") == "table":
+                        payload["table_number"] = item.get("table_number")
+                    else:
+                        payload["figure_number"] = item.get("figure_number")
                 if item.get("table_spans") is not None:
                     payload["table_spans"] = item["table_spans"]
                 if item["type"] == "equation" and item.get("eq_num") is not None:
@@ -389,6 +408,11 @@ def sessions_list():
             out.append(json.loads(p.read_text()))
         except (json.JSONDecodeError, OSError):
             continue
+    # the sidebar only needs names/timestamps; drop persisted traces so the
+    # list fetch stays light (GET /api/chat/sessions/<sid> keeps them)
+    for s in out:
+        for m in s.get("messages", []):
+            m.pop("trace", None)
     out.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
     return out
 
@@ -492,7 +516,10 @@ def start_ocr(doc_id):
     n_pages = doc.get("n_pages") or page_count(Path(doc["pdf_path"]))
     wanted = sorted({p for s, e in requested for p in range(max(1, s), min(n_pages, e) + 1)})
     covered = {p["page"] for p in doc.get("pages", []) if p.get("items")}
-    new_pages = [p for p in wanted if p not in covered]
+    # pairs, never flat ints: a flat list [20, 30] would be misread by
+    # pdf_to_images as ONE (20, 30) range (the "20, 30" bug) — or crash a
+    # 3+-tuple in "for s, e in ranges".
+    new_pages = [(p, p) for p in wanted if p not in covered]
     if not new_pages:
         abort(400, "all requested pages already OCR'd")
     job_id = uuid.uuid4().hex[:12]
@@ -662,8 +689,8 @@ def bbox_ocr(doc_id):
         abort(404)
     data = request.get_json(silent=True) or {}
     btype = data.get("type", "auto")
-    if btype not in ("auto", "equation", "table", "text"):
-        abort(400, "type must be auto|equation|table|text")  # checked before OCR runs
+    if btype not in ("auto", "equation", "table", "text", "figure"):
+        abort(400, "type must be auto|equation|table|text|figure")  # checked before OCR runs
     try:
         page = int(data.get("page", 1))
         box = _parse_box(data)
@@ -673,7 +700,8 @@ def bbox_ocr(doc_id):
     try:
         text = _ocr_page_crop(
             doc, page, box,
-            prompt=EQUATION_PROMPT if btype == "equation" else OCR_PROMPT,
+            prompt=EQUATION_PROMPT if btype == "equation" else
+                   FIGURE_PROMPT if btype == "figure" else OCR_PROMPT,
         )
     except ValueError as e:
         abort(404, str(e))
@@ -697,11 +725,11 @@ def bbox_ocr(doc_id):
 
 @app.route("/item/<doc_id>/<item_id>/caption", methods=["POST"])
 def item_caption(doc_id, item_id):
-    """OCR a drawn region and use it as the caption of a table item.
+    """OCR a drawn region and use it as the caption of a table/figure item.
 
     engine="glm" (default) runs ocr_page, "tesseract" the local CLI. The
-    result is parsed by parse_table_caption and replaces/adds the item's
-    caption and table_number.
+    result is parsed by parse_table_caption / parse_figure_caption and
+    replaces/adds the item's caption + table_number / figure_number.
     """
     if not re.fullmatch(r"[A-Za-z0-9._-]+", doc_id):
         abort(404)
@@ -724,8 +752,8 @@ def item_caption(doc_id, item_id):
     )
     if item is None:
         abort(404, f"item {item_id} not found")
-    if item.get("type") != "table":
-        abort(400, "caption applies to table items only")
+    if item.get("type") not in ("table", "figure"):
+        abort(400, "caption applies to table/figure items only")
 
     try:
         tmp = _render_crop(doc, page, box)
@@ -741,11 +769,22 @@ def item_caption(doc_id, item_id):
     except Exception as e:  # OCR/backend failure -> JSON error, not a 500
         return jsonify({"ok": False, "error": str(e)}), 502
 
+    if item.get("type") == "figure":
+        caption, number = parse_figure_caption(unwrap_html_caption(result["text"]))
+        if caption is None:
+            return jsonify({"ok": False, "error": "no caption text in the selected region"}), 400
+        item["caption"] = caption
+        item["figure_number"] = number
+        item.pop("table_number", None)  # a figure never carries a table number
+        save_doc(doc)
+        return jsonify({"ok": True, "doc": doc, "caption": caption, "figure_number": number})
+
     caption, table_number = parse_table_caption(unwrap_html_caption(result["text"]))
     if caption is None:
         return jsonify({"ok": False, "error": "no caption text in the selected region"}), 400
     item["caption"] = caption
     item["table_number"] = table_number
+    item.pop("figure_number", None)
     save_doc(doc)
     return jsonify({"ok": True, "doc": doc, "caption": caption, "table_number": table_number})
 
@@ -968,9 +1007,19 @@ def chat_sessions():
         abort(400, "name required")
     now = _now()
     s = {"id": uuid.uuid4().hex[:12], "name": name, "kb_id": None,
+         "thinking": _clean_thinking(data.get("thinking")),
          "created_at": now, "updated_at": now, "messages": []}
     save_session(s)
     return jsonify(s), 201
+
+
+# thinking-mode values on the session: "hybrid" (per-query routing, default),
+# "on" (always reason), "off" (fast path, never reason). None -> "hybrid".
+_THINKING_MODES = ("off", "hybrid", "on")
+
+
+def _clean_thinking(v):
+    return v if v in _THINKING_MODES else "hybrid"
 
 
 @app.route("/api/chat/sessions/<sid>", methods=["GET", "PATCH", "DELETE"])
@@ -994,6 +1043,8 @@ def chat_session(sid):
         s["name"] = name
     if "kb_id" in data:
         s["kb_id"] = data.get("kb_id") or None
+    if "thinking" in data:
+        s["thinking"] = _clean_thinking(data.get("thinking"))
     s["updated_at"] = _now()
     save_session(s)
     return jsonify(s)
@@ -1022,25 +1073,26 @@ def chat_message(sid):
     content = str(data.get("content") or "").strip()
     if not content:
         abort(400, "content required")
-    developer = bool(data.get("developer"))
     if "kb_id" in data:  # send carries the dropdown selection; omitted -> stored
         s["kb_id"] = data.get("kb_id") or None
+    if "thinking" in data:  # same no-race pattern: the toggle value rides along
+        s["thinking"] = _clean_thinking(data.get("thinking"))
     now = _now()
     s["messages"].append({"role": "user", "content": content, "ts": now})
+    _thinking = s.get("thinking", "hybrid")
     try:
         answer, trace = orchestrator.answer_turn(
-            content, s["messages"][:-1], s.get("kb_id"))
+            content, s["messages"][:-1], s.get("kb_id"),
+            thinking=None if _thinking == "hybrid" else _thinking == "on")
     except RuntimeError as e:
         s["messages"].pop()  # failed turn: keep the session retryable, don't persist it
         return jsonify({"error": str(e)}), 502
     s["messages"].append({"role": "assistant", "content": answer, "ts": _now(),
-                           "kb_id": s.get("kb_id"), "kb_name": _kb_label(s.get("kb_id"))})
+                           "kb_id": s.get("kb_id"), "kb_name": _kb_label(s.get("kb_id")),
+                           "trace": trace})
     s["updated_at"] = _now()
     save_session(s)
-    resp = {"answer": answer, "session": s}
-    if developer:
-        resp["trace"] = trace  # dev mode only: trace is live, never persisted
-    return jsonify(resp)
+    return jsonify({"answer": answer, "session": s})
 
 
 # --- generation profiles (global + per-model), persisted in settings.json ---
@@ -1059,6 +1111,25 @@ def settings_post():
     except ValueError as e:
         abort(400, str(e))
     return jsonify(clean)
+
+
+@app.route("/api/settings/unsloth-defaults")
+def settings_unsloth_defaults():
+    """The backend's own generation defaults for the Settings panel's
+    "(unsloth's default)" hints: sampler defaults parsed from the backend's
+    /openapi.json ChatCompletionRequest schema (no key needed, cached in
+    profiles.py), plus the loaded model's runtime context_length (0 = Auto
+    resolved for the resident model). Any failure degrades to {} — a hint
+    is never worth a 500 or a dead model bar."""
+    try:
+        out = profiles.unsloth_defaults()
+    except Exception:
+        return jsonify({})
+    try:
+        out["context_length"] = models.status().get("context_length")
+    except Exception:
+        out["context_length"] = None
+    return jsonify(out)
 
 
 # --- Unsloth RAG knowledge-base management ---
@@ -1110,22 +1181,59 @@ def kb_update(kb_id):
     return jsonify({"ok": True, "name": name})
 
 
-def _kb_upload_docs(kb_id, doc_id):
+class OverwriteRequired(Exception):
+    """KB upload would clobber existing documents; .existing carries the
+    clashing filenames. The route maps this to a 409 so the client can
+    confirm. All-or-nothing: raised BEFORE any upload lands, so cancelling
+    leaves the KB unchanged."""
+    def __init__(self, existing):
+        super().__init__(f"documents already in KB: {', '.join(existing)}")
+        self.existing = existing
+
+
+def _kb_existing(kb_id):
+    """{filename: document_id} for a KB (RuntimeError propagates as 502)."""
+    return {d.get("filename"): d.get("id") for d in rag.list_docs(kb_id)}
+
+
+def _kb_upload_docs(kb_id, doc_id, overwrite=False):
     """Upload one verified doc (or "__all__") to a KB. Returns
-    (uploaded_filenames, skipped). Raises RuntimeError on API failures."""
+    (uploaded_filenames, skipped).
+
+    Raises OverwriteRequired when a target filename is already in the KB and
+    overwrite is False (caller maps to 409; nothing is uploaded yet). With
+    overwrite=True the old document is deleted first, then re-uploaded.
+    Raises RuntimeError on API failures.
+    """
+    existing = _kb_existing(kb_id)
     if doc_id == "__all__":
         by_doc = rag.docs_from_verified(rag.VERIFIED_DIR)
         dirs = {d.name for d in rag.VERIFIED_DIR.iterdir() if d.is_dir()}
+        clash = [fn for did in sorted(by_doc)
+                 for fn in (f"{did}.md",)
+                 if existing.get(fn) and not overwrite]
+        if clash:
+            raise OverwriteRequired(clash)
         uploaded = []
         for did, items in sorted(by_doc.items()):
-            rag.upload_doc(kb_id, f"{did}.md", rag.render_markdown(items), False)
-            uploaded.append(f"{did}.md")
+            fn = f"{did}.md"
+            old_id = existing.get(fn)
+            if old_id:  # overwrite=True path only: clash list was empty above
+                rag.delete_doc(old_id)
+            rag.upload_doc(kb_id, fn, rag.render_markdown(items), False)
+            uploaded.append(fn)
         return uploaded, len(dirs - set(by_doc))
     items = rag.docs_for_doc(doc_id)
     if not items:
         abort(404, f"no verified items for {doc_id}")
-    rag.upload_doc(kb_id, f"{doc_id}.md", rag.render_markdown(items), False)
-    return [f"{doc_id}.md"], 0
+    fn = f"{doc_id}.md"
+    old_id = existing.get(fn)
+    if old_id and not overwrite:
+        raise OverwriteRequired([fn])
+    if old_id:
+        rag.delete_doc(old_id)
+    rag.upload_doc(kb_id, fn, rag.render_markdown(items), False)
+    return [fn], 0
 
 
 @app.route("/api/kb/<kb_id>/upload", methods=["POST"])
@@ -1136,8 +1244,11 @@ def kb_upload(kb_id):
     doc_id = str(data.get("doc_id") or "").strip()
     if not doc_id:
         abort(400, 'doc_id required (or "__all__")')
+    overwrite = bool(data.get("overwrite"))  # JSON true only; absent/anything else = no
     try:
-        uploaded, skipped = _kb_upload_docs(kb_id, doc_id)
+        uploaded, skipped = _kb_upload_docs(kb_id, doc_id, overwrite=overwrite)
+    except OverwriteRequired as e:
+        return jsonify({"existing": sorted(e.existing)}), 409
     except RuntimeError as e:
         return jsonify({"error": str(e)}), 502
     return jsonify({"uploaded": uploaded, "skipped": skipped})
@@ -1231,7 +1342,7 @@ def _model_job(job_id, path, current_path, variant=None):
     refuse or evict mid-flight otherwise). force_cancel_active kills
     non-cancellable in-flight generations (ocr_engine sends non-streaming
     calls). The resolved profile's context_length threads into models.load
-    as max_seq_length (None -> the per-role config default)."""
+    as max_seq_length (None -> the backend default)."""
     global MODEL_JOB_ID
     try:
         JOBS[job_id]["step"] = f"unloading {_model_label(current_path) if current_path else 'resident'}"

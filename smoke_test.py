@@ -8,7 +8,7 @@ Covers PLAN verification cases 2-4 minus the actual GLM-OCR call:
   - upload without .md -> ocr_needed=true; /ocr returns job_id immediately;
     with UNSLOTH_API_KEY unset the job errors with a clear message
   - equation key editing: explicit eq_num/eq_letters (None = untouched, "" = cleared)
-  - draw-box type forcing (auto/equation/table/text) + append_bbox_item kinds
+  - draw-box type forcing (auto/equation/table/text/figure) + append_bbox_item kinds
   - per-item delete (item + verified/rejected copies removed)
 Run: python3 smoke_test.py
 """
@@ -80,6 +80,32 @@ def main():
     check(ocr.parse_page_ranges("") is None, "parse_page_ranges '' -> None")
     check(ocr.parse_page_ranges("2-3,x") is None, "parse_page_ranges bad chunk -> None")
     check(ocr.parse_page_ranges("3-1") is None, "parse_page_ranges reversed -> None")
+    # "20, 30" = the RANGE 20-30 (user-confirmed); two bare numbers merge
+    check(ocr.parse_page_ranges("20, 30") == [(20, 30)],
+          "parse_page_ranges '20, 30' -> [(20,30)] a range, not two pages")
+    check(ocr.parse_page_ranges("20, 30, 40") == [(20, 20), (30, 30), (40, 40)],
+          "parse_page_ranges '20, 30, 40' -> individual pages")
+    check(ocr.parse_page_ranges("30, 20") is None,
+          "parse_page_ranges '30, 20' -> None (reversed bare pair)")
+    # smart dashes: pasted en/em dashes must not 400
+    check(ocr.parse_page_range("20\u201330") == (20, 30), "parse_page_range en-dash")
+    check(ocr.parse_page_range("20\u201430") == (20, 30), "parse_page_range em-dash")
+    check(ocr.parse_page_ranges("20\u201330") == [(20, 30)], "parse_page_ranges en-dash")
+    check(ocr.parse_page_ranges("20\u201430") == [(20, 30)], "parse_page_ranges em-dash")
+    # pdf_to_images range semantics: a tuple list is DISJOINT pages, a flat
+    # int list is ONE (start, end) range — the "20, 30" accidental-range bug
+    import tempfile
+    with tempfile.TemporaryDirectory() as pd:
+        pdf4 = Path(pd) / "t.pdf"
+        d4 = pymupdf.open()
+        for _ in range(4):
+            d4.new_page()
+        d4.save(str(pdf4))
+        d4.close()
+        imgs, _ = ocr.pdf_to_images(pdf4, page_range=[(1, 1), (3, 3)])
+        check([n for n, _ in imgs] == [1, 3], "pdf_to_images tuple list -> pages 1,3 only")
+        imgs2, _ = ocr.pdf_to_images(pdf4, page_range=[1, 3])
+        check([n for n, _ in imgs2] == [1, 2, 3], "pdf_to_images flat [1,3] -> range pages 1..3")
     # Fixture PDF (2 pages) so page_count and page PNG work.
     pdf_dir = REPO / "validation" / "uploads" / "smoke"
     pdf_dir.mkdir(parents=True, exist_ok=True)
@@ -94,6 +120,7 @@ def main():
     md_path.write_text(MARKDOWN)
 
     os.environ.pop("UNSLOTH_API_KEY", None)  # force the no-key path deterministically
+    ocr.API_KEY = None  # config read the env at import (name-bound): scrub the copy too
 
     import app as appmod  # pyright: ignore[reportMissingImports] — same-dir module
 
@@ -130,8 +157,12 @@ def main():
           "review page uses MathJax CHTML")
     check('id="captionEngine"' in html, "review page has caption engine select")
     check('id="onlyOcr"' in html, "review page has OCR'd-only page filter")
-    check('id="bulkAcceptMath"' in html, "review page has inline-math bulk accept button")
     check('id="bulkAcceptText"' in html, "review page has text bulk accept button")
+    check('id="bulkRejectText"' in html, "review page has text bulk reject button")
+    check('id="bulkAcceptMath"' not in html, "inline-math bulk split gone (text merged)")
+    check('id="showMath"' not in html and 'id="showText"' not in html,
+          "show math / show text checkboxes gone (text always shown)")
+    check('value="figure"' in html, "draw-box type includes figure")
 
     # page PNG
     r = client.get(f"/page/{doc_id}/1.png")
@@ -382,15 +413,26 @@ def main():
           "append_bbox_item orders increment at the page tail")
     check(appmod.append_bbox_item(probe2, 1, "|A|\n|---|\n|1|", "table")["type"] == "table",
           "append_bbox_item forced table kind")
+    fitem = appmod.append_bbox_item(probe2, 1, "Frame under lateral load.", "figure")
+    check(fitem["type"] == "figure" and fitem.get("order") == 5,
+          "append_bbox_item forced figure kind, tail order")
 
-    # equation/text kinds strip the HTML <table> wrapper GLM sometimes emits,
-    # keeping the math/content (and a trailing eq key still captures)
+    # equation/text kinds strip the HTML <table> wrapper GLM sometimes emits;
+    # equation content additionally loses the math delimiters (bare LaTeX —
+    # the UI wraps it in \[\]) and a trailing eq key still captures
     art = ('<table><thead><tr><th>$T_{n}$</th><th>$\\frac{2A_{o}A_{\\ell}f_{y}}{p_{h}}$</th>'
            '<th>$\\tan \\theta$</th></tr></thead><tbody><tr></tbody></table>')
     eq = appmod.append_bbox_item(probe2, 1, art + " (22.5.1.10a)", "equation")
-    check(eq["content"] == "$T_{n}$ $\\frac{2A_{o}A_{\\ell}f_{y}}{p_{h}}$ $\\tan \\theta$ (22.5.1.10a)"
+    check(eq["content"] == "T_{n} \\frac{2A_{o}A_{\\ell}f_{y}}{p_{h}} \\tan \\theta (22.5.1.10a)"
           and eq.get("eq_num") == "22.5.1.10a",
-          "equation bbox strips HTML table wrapper, keeps math + eq key")
+          "equation bbox strips HTML wrapper AND $ delimiters, keeps bare LaTeX + eq key")
+    eqw = appmod.append_bbox_item(probe2, 1, "$$V_n = V_c + V_s$$ (22.5.1.1)", "equation")
+    check(eqw["content"] == "V_n = V_c + V_s (22.5.1.1)" and eqw.get("eq_num") == "22.5.1.1",
+          "$$..$$ delimiters stripped from drawn equation, bare LaTeX + eq key survive")
+    eqw2 = appmod.append_bbox_item(probe2, 1, "(a) $$V_{ci} = 0.17\\lambda\\sqrt{f'_c}b_wd$$ (22.5.6.3.1a)", "equation")
+    check(eqw2["content"] == "(a) V_{ci} = 0.17\\lambda\\sqrt{f'_c}b_wd (22.5.6.3.1a)"
+          and eqw2.get("eq_letters") == "a" and eqw2.get("eq_num") == "22.5.6.3.1a",
+          "drawn equation keeps (a)/eq-number markers after delimiter strip")
     tx = appmod.append_bbox_item(probe2, 1, art, "text")
     check(tx["content"] == "$T_{n}$ $\\frac{2A_{o}A_{\\ell}f_{y}}{p_{h}}$ $\\tan \\theta$"
           and tx["has_inline_math"],
@@ -410,6 +452,9 @@ def main():
     r = client.post(f"/bbox_ocr/{doc_id}", json={"page": 1, "x": 0, "y": 0, "w": .5, "h": .5, "type": "equation"})
     check(r.status_code == 502 and "UNSLOTH_API_KEY" in r.get_json().get("error", ""),
           "valid forced type passes validation, reaches OCR (no-key error)")
+    r = client.post(f"/bbox_ocr/{doc_id}", json={"page": 1, "x": 0, "y": 0, "w": .5, "h": .5, "type": "figure"})
+    check(r.status_code == 502 and "UNSLOTH_API_KEY" in r.get_json().get("error", ""),
+          "figure forced type passes validation, reaches OCR (no-key error)")
 
     # caption route input validation (no live OCR call)
     r = client.post(f"/item/{doc_id}/{table_id}/caption", json={"x": .2, "y": .2})
@@ -676,9 +721,16 @@ def main():
         check(r.get_json()["kb_id"] is None, "session kb_id cleared with null")
         r = client.get(f"/api/chat/sessions/{sid}")
         check(r.status_code == 200 and r.get_json()["messages"] == []
-              and r.get_json()["name"] == "renamed", "get session")
-        check(client.post("/api/chat/sessions", json={}).status_code == 400,
-              "create session no name -> 400")
+              and r.get_json()["name"] == "renamed"
+              and r.get_json()["thinking"] == "hybrid",
+              "get session (defaults to thinking=hybrid)")
+        r = client.patch(f"/api/chat/sessions/{sid}", json={"thinking": "on"})
+        check(r.get_json()["thinking"] == "on", "session thinking set to on")
+        r = client.patch(f"/api/chat/sessions/{sid}", json={"thinking": "garbage"})
+        check(r.get_json()["thinking"] == "hybrid",
+              "invalid thinking mode coerced back to hybrid")
+        r = client.patch(f"/api/chat/sessions/{sid}", json={"thinking": "hybrid"})
+        check(r.get_json()["thinking"] == "hybrid", "session thinking reset to hybrid")
         check(client.post("/api/chat/sessions", json={"name": "  "}).status_code == 400,
               "create session blank name -> 400")
         check(client.get("/api/chat/sessions/nope").status_code == 404,
@@ -699,9 +751,11 @@ def main():
     saved_ans = appmod.orchestrator.answer_turn
     saved_list_kbs = appmod.rag.list_kbs
     sent_tokens = []
+    sent_thinking = []
 
-    def fake_answer_turn(user_turn, history, kb_id, max_tokens=None):
+    def fake_answer_turn(user_turn, history, kb_id, max_tokens=None, thinking=None):
         sent_tokens.append(max_tokens)
+        sent_thinking.append(thinking)
         return f"echo:{user_turn}:{kb_id}", [
             {"kind": "retrieval", "chunks": ["c1", "c2", "c3"]},
             {"kind": "message", "content": user_turn},
@@ -720,19 +774,36 @@ def main():
         j = r.get_json()
         check(j["answer"] == "echo:hello:None",
               "answer echoed, kb_id=None when unset")
-        check("trace" not in j, "no trace key without developer flag")
+        check("trace" not in j, "no top-level trace key on the POST response")
+        # the trace is ALWAYS persisted on the assistant message now
+        persisted = j["session"]["messages"][1]
+        kinds = [t["kind"] for t in persisted["trace"]]
+        check(kinds == ["retrieval", "message", "answer"],
+              f"assistant message carries the persisted trace kinds {kinds}")
         s2 = client.get(f"/api/chat/sessions/{sid}").get_json()
         check([m["role"] for m in s2["messages"]] == ["user", "assistant"],
               "history persisted after turn")
         check(s2["messages"][0]["content"] == "hello"
               and s2["messages"][1]["content"] == j["answer"],
               "message contents persisted")
+        check([t["kind"] for t in s2["messages"][1]["trace"]]
+              == ["retrieval", "message", "answer"],
+              "session GET keeps the persisted trace")
+        # sidebar list strips traces (heavy field); the full GET keeps them
+        sl = client.get("/api/chat/sessions").get_json()["sessions"]
+        check(all("trace" not in m for s in sl for m in s.get("messages", [])),
+              "sessions_list strips trace keys from sidebar entries")
+        # /chat?s=<sid> still serves the trace-laden session
+        page = client.get(f"/chat?s={sid}")
+        check(page.status_code == 200 and b'"trace"' in page.data
+              and b'"retrieval"' in page.data,
+              "GET /chat renders the trace-laden session")
         r = client.post(f"/api/chat/sessions/{sid}/messages",
-                        json={"content": "again", "developer": True})
+                        json={"content": "again"})  # developer body field gone
         j = r.get_json()
-        kinds = [t["kind"] for t in j["trace"]]
+        kinds = [t["kind"] for t in j["session"]["messages"][-1]["trace"]]
         check(kinds == ["retrieval", "message", "answer"],
-              f"developer=true returns trace kinds {kinds}")
+              f"every assistant message carries its own persisted trace {kinds}")
         # kb selection threads through to answer_turn
         client.patch(f"/api/chat/sessions/{sid}", json={"kb_id": "kbab"})
         r = client.post(f"/api/chat/sessions/{sid}/messages", json={"content": "withkb"})
@@ -775,12 +846,31 @@ def main():
         check(all(t is None for t in sent_tokens),
               "chat route calls answer_turn with no positional max-tokens "
               "(profile max_tokens resolves inside chat())")
+        # thinking mode: default hybrid (None), forced on/off, body override
+        check(sent_thinking[0] is None and sent_thinking[1] is None,
+              "default (unset) thinking -> hybrid (None) into answer_turn")
+        client.patch(f"/api/chat/sessions/{sid}", json={"thinking": "on"})
+        client.post(f"/api/chat/sessions/{sid}/messages", json={"content": "thinkon"})
+        check(sent_thinking[-1] == True, "session thinking=on threads True")
+        s3 = client.get(f"/api/chat/sessions/{sid}").get_json()
+        check(s3["messages"][-1].get("trace") and s3["messages"][-1][
+              "trace"][-1]["kind"] == "answer",
+              "forced-on turn still persisted with its trace")
+        client.patch(f"/api/chat/sessions/{sid}", json={"thinking": "off"})
+        client.post(f"/api/chat/sessions/{sid}/messages", json={"content": "thinkoff"})
+        check(sent_thinking[-1] == False, "session thinking=off threads False")
+        client.post(f"/api/chat/sessions/{sid}/messages",
+                    json={"content": "bodyoverride", "thinking": "on"})
+        check(sent_thinking[-1] == True
+              and client.get(f"/api/chat/sessions/{sid}").get_json()["thinking"] == "on",
+              "message-body thinking overrides the stored mode and persists")
     finally:
         appmod.orchestrator.answer_turn = saved_ans
         appmod.rag.list_kbs = saved_list_kbs
 
     # --- KB routes (rag_uploader._api stubbed) ---
     api_calls = []
+    existing_docs = []  # filenames present in the fake KB (overwrite tests)
 
     def stub_name(data):
         # test stub: route always sends {name}; a malformed body still must
@@ -798,6 +888,13 @@ def main():
                 {"id": "k2", "name": "OpenSees", "description": "e", "documentCount": 9}]}
         if method == "POST" and path == "/api/rag/knowledge-bases":
             return {"id": "knew", "name": stub_name(data), "documentCount": 0}
+        m = re.fullmatch(r"/api/rag/knowledge-bases/([^/]+)/documents", path)
+        if method == "GET" and m:
+            return {"documents": [{"id": f"doc-{fn}", "filename": fn} for fn in existing_docs]}
+        m = re.fullmatch(r"/api/rag/documents/([^/]+)", path)
+        if method == "DELETE" and m:
+            existing_docs[:] = [fn for fn in existing_docs if f"doc-{fn}" != m.group(1)]
+            return {"ok": True}
         if method == "PATCH":
             return {"id": path.rsplit("/", 1)[-1], "name": stub_name(data)}
         if method == "DELETE":
@@ -843,9 +940,30 @@ def main():
         r = client.post("/api/kb/k1/upload", json={"doc_id": "smoke"})
         check(r.status_code == 200 and r.get_json()["uploaded"] == ["smoke.md"],
               "KB single-doc upload -> uploaded [smoke.md]")
-        check(any(p.endswith("/documents") for _, p in api_calls),
+        check(any(m == "POST" and p.endswith("/documents") for m, p in api_calls),
               "single-doc upload hits documents endpoint")
+        # overwrite: same-named doc already in KB -> 409 with the clashing
+        # filenames and NOTHING uploaded; overwrite:true deletes then re-uploads
         api_calls.clear()
+        existing_docs.append("smoke.md")
+        r = client.post("/api/kb/k1/upload", json={"doc_id": "smoke"})
+        check(r.status_code == 409 and r.get_json()["existing"] == ["smoke.md"],
+              "same-named doc already in KB -> 409 with existing filenames")
+        check(not any(m == "POST" and p.endswith("/documents") for m, p in api_calls),
+              "409 path uploads nothing (cancelling leaves KB unchanged)")
+        api_calls.clear()
+        r = client.post("/api/kb/k1/upload", json={"doc_id": "smoke", "overwrite": True})
+        check(r.status_code == 200 and r.get_json()["uploaded"] == ["smoke.md"],
+              "overwrite:true -> 200 re-upload")
+        check(any(m == "DELETE" and p.startswith("/api/rag/documents/") for m, p in api_calls),
+              "overwrite deletes the old document first")
+        api_calls.clear()
+        existing_docs.append("smoke.md")
+        r = client.post("/api/kb/k1/upload", json={"doc_id": "__all__"})
+        check(r.status_code == 409 and r.get_json()["existing"] == ["smoke.md"],
+              "__all__ with a clash -> 409 existing list")
+        api_calls.clear()
+        existing_docs.clear()
         r = client.post("/api/kb/k1/upload", json={"doc_id": "__all__"})
         j = r.get_json()
         check(r.status_code == 200 and j["uploaded"] == ["smoke.md"] and j["skipped"] == 0,
@@ -929,6 +1047,35 @@ def main():
             "models": {"ibm-granite/granite-4.2-8b-GGUF": {}}})
         check(client.get("/api/settings").get_json()["models"] == {},
               "empty per-model override clears the entry")
+        # /api/settings/unsloth-defaults: the backend's own generation
+        # defaults (OpenAPI sampler schema) + the loaded model's runtime
+        # context; a backend failure degrades to {} (hint, never 500)
+        saved_udef, saved_status = (appmod.profiles.unsloth_defaults,
+                                    appmod.models.status)
+        try:
+            appmod.profiles.unsloth_defaults = lambda: {
+                "temperature": 0.6, "top_k": 20, "top_p": 0.95,
+                "min_p": 0.01, "repeat_penalty": 1.0, "max_tokens": None}
+            appmod.models.status = lambda: {"context_length": 8704}
+            j = client.get("/api/settings/unsloth-defaults").get_json()
+            check(j == {"temperature": 0.6, "top_k": 20, "top_p": 0.95,
+                        "min_p": 0.01, "repeat_penalty": 1.0,
+                        "max_tokens": None, "context_length": 8704},
+                  f"unsloth-defaults merges sampler defaults + runtime ctx ({j})")
+
+            def _stub_down():
+                raise RuntimeError("backend down")
+
+            appmod.profiles.unsloth_defaults = _stub_down
+            appmod.models.status = _stub_down
+            check(client.get("/api/settings/unsloth-defaults").get_json() == {},
+                  "unsloth-defaults degrades to {} when the backend is down")
+        finally:
+            appmod.profiles.unsloth_defaults = saved_udef
+            appmod.models.status = saved_status
+        check("/api/settings/unsloth-defaults"
+              in client.get("/chat").get_data(as_text=True),
+              "/chat carries the unsloth-defaults fetch (Settings hints)")
     finally:
         appmod.profiles.SETTINGS_PATH = saved_spath
         shutil.rmtree(tmp_settings, ignore_errors=True)
@@ -1121,7 +1268,7 @@ def main():
           and "localStorage.getItem('theme') || 'dark'" in h
           and 'id="themeBtn"' in h,
           "/ defaults to dark theme (anti-FOUC script + shared theme toggle)")
-    check('--bg:#0f172a' in h and '--surface:#1e293b' in h and '--line:#334155' in h,
+    check('--bg:#0b0f17' in h and '--surface:#131a26' in h and '--line:#222c3d' in h,
           "/ carries the dark token palette (soft slate)")
     r = client.get("/chat")
     h = r.get_data(as_text=True)
@@ -1131,8 +1278,9 @@ def main():
           "/chat defaults to dark theme (anti-FOUC script + shared theme toggle)")
     check('id="sideToggle"' in h and 'id="thread"' in h
           and 'id="inputRow"' in h and 'id="settingsWrap"' in h
-          and 'id="settingsPanel"' in h and 'id="settingsBtn"' in h,
-          "/chat layout: sidebar toggle, full-height thread, pinned input, settings dropdown")
+          and 'id="settingsPanel"' in h and 'id="settingsBtn"' in h
+          and 'id="thinkBtn"' in h and '🧠 auto' in h,
+          "/chat layout: sidebar toggle, full-height thread, pinned input, settings dropdown, thinking-mode toggle")
     check('id="modelSel"' in h and 'id="loadBtn"' in h
           and 'id="settingsSave"' in h and 'id="moSel"' in h
           and 'id="g-context_length"' in h and 'id="kbSel"' in h

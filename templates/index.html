@@ -14,50 +14,73 @@ window.MathJax = {tex: {inlineMath: [["\\(", "\\)"], ["$", "$"]]}};
 <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-chtml.js" async></script>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
-  .wrap { max-width: 1500px; margin: 0 auto; padding: 16px; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         -webkit-font-smoothing: antialiased; margin: 0; background: var(--bg); color: var(--text); }
+  .wrap { max-width: 1500px; margin: 0 auto; padding: 20px; }
   header { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; }
   header h1 { font-size: 20px; margin: 0; }
   .muted { color: var(--muted); font-size: 13px; }
-  button { cursor: pointer; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--text); }
-  button:hover { background: var(--surface-hover); }
-  input[type=text], input[type=file], textarea, select { border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
-  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px; margin-bottom: 16px; }
+  a { color: var(--accent-text); }
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+          box-shadow: var(--shadow-1); padding: 16px; margin-bottom: 16px; }
+  .card h3 { margin: 0 0 12px; font-size: 14px; font-weight: 600; letter-spacing: .01em;
+             padding-bottom: 10px; border-bottom: 1px solid var(--line); }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
   #main { display: flex; gap: 16px; align-items: flex-start; }
   #pane { flex: 0 0 46%; max-width: 640px; position: sticky; top: 12px; }
   #imgWrap { overflow: auto; max-height: calc(100vh - 250px); }
   #imgBox { position: relative; display: inline-block; min-width: 100%; }
-  #pageImg { display: block; border: 1px solid var(--line); border-radius: 4px; background: #fff; }
+  #pageImg { display: block; border: 1px solid var(--line); border-radius: var(--radius-sm);
+             background: #fff; box-shadow: var(--shadow-2); }
   #bboxSel { position: absolute; border: 2px solid var(--err-border); background: rgba(239,68,68,.15);
              pointer-events: none; display: none; z-index: 5; }
   #items { flex: 1 1 auto; display: flex; flex-direction: column; gap: 10px; }
-  .item { border: 1px solid var(--line); border-radius: 6px; background: var(--surface); padding: 10px; }
+  .item { position: relative; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+          box-shadow: var(--shadow-1); padding: 12px 14px; }
   .item.done { opacity: .6; }
-  .item.verified { border-color: var(--ok-border); background: var(--ok-bg); }
-  .item.rejected { border-color: var(--err-border); background: var(--err-bg); }
-  .item.active { outline: 2px solid var(--accent); }
-  .badge { display: inline-block; font-size: 11px; text-transform: uppercase; letter-spacing: .5px;
-           background: var(--accent-bg); color: var(--accent-text); border-radius: 3px; padding: 2px 6px; margin-right: 8px; }
+  .item.verified { border-color: var(--ok-border); background: var(--ok-tint);
+                   box-shadow: var(--shadow-1), inset 3px 0 0 var(--ok-border); }
+  .item.rejected { border-color: var(--err-border); background: var(--err-tint);
+                   box-shadow: var(--shadow-1), inset 3px 0 0 var(--err-border); }
+  .item.active { box-shadow: var(--shadow-1), 0 0 0 2px var(--accent); }
+  .item.verified.active { box-shadow: var(--shadow-1), inset 3px 0 0 var(--ok-border), 0 0 0 2px var(--accent); }
+  .item.rejected.active { box-shadow: var(--shadow-1), inset 3px 0 0 var(--err-border), 0 0 0 2px var(--accent); }
+  .badge { display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .5px;
+           background: var(--accent-bg); color: var(--accent-text); border-radius: 999px; padding: 3px 9px; margin-right: 8px; }
   .badge.table { background: var(--ok-bg); color: var(--ok); }
   .badge.equation { background: var(--warn-bg); color: var(--warn-text); }
-  .badge.math { background: var(--purple-bg); color: var(--purple-text); }
+  .badge.figure { background: var(--purple-bg); color: var(--purple-text); }
   .badge.skipped { background: var(--gray-bg); color: var(--gray-text); }
   .content { margin: 8px 0; white-space: pre-wrap; font-size: 14px; }
   .mathbox { overflow-x: auto; }
   .caption { font-weight: 600; margin: 6px 0 4px; }
-  table.grid { border-collapse: collapse; width: 100%; }
-  table.grid { border-collapse: collapse; }
+  table.grid { border-collapse: collapse; width: 100%; border-radius: var(--radius-sm); overflow: hidden; }
   table.grid td { border: 1px solid var(--line-strong); }
-  table.grid td.sel { outline: 2px solid var(--accent); }
+  table.grid td.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
   table.grid td.merged { background: var(--merged-bg); }
   table.grid input { width: 100%; border: 1px solid var(--line-strong); border-radius: 3px; padding: 3px 5px; font-size: 13px; }
-  .actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-  input.order { width: 3.5em; border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 10px;
+             padding-top: 10px; border-top: 1px solid var(--line); }
+  input.order { width: 3.5em; border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px; }
   .ok { color: var(--ok); } .err { color: var(--err); }
-  #ocrbar { display: none; padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; background: var(--ocrbar-bg); border: 1px solid var(--ocrbar-border); }
-  .pill { font-size: 12px; background: var(--accent-bg); border-radius: 10px; padding: 2px 8px; }
-  button.discardList { padding: 2px 8px; font-size: 12px; color: var(--err); }
+  #ocrbar { display: none; padding: 10px 14px; border-radius: var(--radius); margin-bottom: 12px;
+            background: var(--ocrbar-bg); border: 1px solid var(--ocrbar-border); }
+  .pill { font-size: 12px; background: var(--accent-bg); color: var(--accent-text); border-radius: 999px;
+          padding: 3px 10px; font-weight: 500; }
+  button.discardList { padding: 3px 10px; font-size: 12px; color: var(--err); border-color: var(--err-border); }
+  button.discardList:hover { background: var(--err-bg); }
+  .act.accept { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; }
+  .act.accept:hover { background: var(--accent-solid-hover); border-color: var(--accent-solid-hover); }
+  .act.reject, .act.del { color: var(--err); border-color: var(--err-border); }
+  .act.reject:hover, .act.del:hover { background: var(--err-bg); }
+  #upKbBtn, #kbCreateBtn { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; }
+  #upKbBtn:hover, #kbCreateBtn:hover { background: var(--accent-solid-hover); border-color: var(--accent-solid-hover); }
+  .card table { width: 100%; border-collapse: collapse; border-radius: var(--radius-sm); overflow: hidden; }
+  .card table th { text-transform: uppercase; font-size: 11px; letter-spacing: .04em;
+    color: var(--muted); font-weight: 600; padding: 8px 6px; }
+  .card table td { padding: 8px 6px; border-top: 1px solid var(--line); }
+  .card table td[align="center"] { font-variant-numeric: tabular-nums; }
+  .card table tr:hover td { background: var(--surface-hover); }
 </style>
 </head>
 <body>
@@ -70,7 +93,7 @@ window.MathJax = {tex: {inlineMath: [["\\(", "\\)"], ["$", "$"]]}};
   <span class="muted" id="counter"></span>
   <span class="muted" id="ocrCoverage"></span>
   <label class="muted">OCR more:
-    <input id="ocrMorePages" size="6" placeholder="e.g. 5-15"></label>
+    <input id="ocrMorePages" size="14" placeholder="e.g. 5-15 or 20, 30 (range)"></label>
   <button id="ocrMoreBtn">OCR more pages</button>
 </div>
 {% endif %}
@@ -80,9 +103,7 @@ window.MathJax = {tex: {inlineMath: [["\\(", "\\)"], ["$", "$"]]}};
 <div class="card row">
   <label>Page <select id="pageSel"></select> / <span id="pageTotal"></span></label>
   <button id="prevPg">‹ prev</button><button id="nextPg">next ›</button>
-  <span class="muted">default review: equations + tables</span>
-  <label class="muted"><input type="checkbox" id="showMath"> show inline math</label>
-  <label class="muted"><input type="checkbox" id="showText"> show text</label>
+  <span class="muted">default review: equations + tables, text always shown</span>
   <label class="muted"><input type="checkbox" id="onlyOcr"> OCR'd pages only</label>
   <label class="muted">caption box OCR:
     <select id="captionEngine">
@@ -96,16 +117,15 @@ window.MathJax = {tex: {inlineMath: [["\\(", "\\)"], ["$", "$"]]}};
       <option value="auto" selected>auto</option>
       <option value="equation">equation</option>
       <option value="table">table</option>
-      <option value="text">text + inline math</option>
+      <option value="text">text</option>
+      <option value="figure">figure</option>
     </select>
   </label>
   <button id="bboxBtn" title="drag on the page to OCR that region only">Draw box</button>
   <button id="bulkSkip">Pass for now (selected)</button>
   <button id="bulkAccept">Accept selected</button>
-  <button id="bulkAcceptMath" title="accept all inline-math text items on this page">Accept inline math</button>
-  <button id="bulkAcceptText" title="accept all plain text items on this page">Accept text</button>
-  <button id="bulkRejectMath" title="reject all inline-math text items on this page">Reject inline math</button>
-  <button id="bulkRejectText" title="reject all plain text items on this page">Reject text</button>
+  <button id="bulkAcceptText" title="accept all text items on this page (inline math included)">Accept text</button>
+  <button id="bulkRejectText" title="reject all text items on this page (inline math included)">Reject text</button>
   <button id="discardBtn" title="delete this document from the queue">Discard document</button>
   <a href="/"><button>‹ documents</button></a>
 </div>
@@ -242,7 +262,7 @@ const ocrMore = async () => {
   const pages = document.getElementById("ocrMorePages").value.trim();
   if (!pages) {
     bar.style.display = "block";
-    bar.textContent = "Enter pages to OCR (e.g. 5-15 or 2-3, 4-9)";
+    bar.textContent = "Enter pages to OCR (e.g. 5-15 or 20, 30 = a range)";
     return;
   }
   try {
@@ -486,13 +506,15 @@ function addCol(ed) {
 function badgeClass(it) {
   if (it.type === "equation") return "badge equation";
   if (it.type === "table") return "badge table";
-  return it.has_inline_math ? "badge math" : "badge";
+  if (it.type === "figure") return "badge figure";
+  return "badge";
 }
 
 function label(it) {
   if (it.type === "equation") return "equation";
   if (it.type === "table") return "table";
-  return it.has_inline_math ? "text · inline math" : "text";
+  if (it.type === "figure") return "figure";
+  return "text";  // plain and inline-math text share the text category
 }
 
 function itemEditorOpen(el) {
@@ -561,6 +583,12 @@ function renderItem(it) {
     }
     renderEditor(el, it.content);
   } else {
+    if (it.type === "figure" && it.caption) {
+      const cap = document.createElement("div");
+      cap.className = "caption";
+      cap.textContent = it.caption;
+      el.appendChild(cap);
+    }
     const pre = document.createElement("pre");
     pre.className = "content";
     pre.textContent = it.content;
@@ -600,7 +628,7 @@ function renderItem(it) {
   orderLabel.appendChild(orderIn);
   actions.appendChild(orderLabel);
 
-  if (it.type === "table") {
+  if (it.type === "table" || it.type === "figure") {
     const capBox = document.createElement("button");
     capBox.className = "act capbox";
     capBox.title = "drag on the page to OCR that caption region (uses the caption box engine)";
@@ -710,8 +738,6 @@ function render() {
     ? `page ${pageLabel(pageNo)} of ${nav.length} (OCR'd; actual ${pageNo} of ${DOC.n_pages}, rendered at 200 dpi)`
     : `page ${pageNo} of ${DOC.n_pages} (rendered at 200 dpi)`;
 
-  const showMath = document.getElementById("showMath").checked;
-  const showText = document.getElementById("showText").checked;
   const pg = pages.find(p => p.page === pageNo);
   const box = document.getElementById("items");
   box.innerHTML = "";
@@ -720,11 +746,8 @@ function render() {
     updateCounter();
     return;
   }
-  for (const it of pg.items) {
-    const show = it.type === "equation" || it.type === "table"
-      || (it.has_inline_math && showMath) || (!it.has_inline_math && showText);
-    if (!show) continue;
-    const el = renderItem(it);
+  for (const it of pg.items) {  // equations, tables, figures, and ALL text (inline math included)
+    const el = renderItem({...it, page: pg.page});
     if (it.id === cursorId) el.classList.add("active");
     box.appendChild(el);
   }
@@ -848,8 +871,6 @@ async function bulk(action) {
   } catch (e) { alert("Bulk failed: " + e.message); }
 }
 
-document.getElementById("showMath").addEventListener("change", render);
-document.getElementById("showText").addEventListener("change", render);
 document.getElementById("pageSel").addEventListener("change", e => {
   pageNo = +e.target.value;
   cursorId = null;
@@ -867,19 +888,15 @@ document.getElementById("onlyOcr").addEventListener("change", () => {
   render();
 });
 
-document.getElementById("bulkAcceptMath").addEventListener("click", () => bulkByType("accept", "math"));
-document.getElementById("bulkAcceptText").addEventListener("click", () => bulkByType("accept", "text"));
-document.getElementById("bulkRejectMath").addEventListener("click", () => bulkByType("reject", "math"));
-document.getElementById("bulkRejectText").addEventListener("click", () => bulkByType("reject", "text"));
+document.getElementById("bulkAcceptText").addEventListener("click", () => bulkByType("accept"));
+document.getElementById("bulkRejectText").addEventListener("click", () => bulkByType("reject"));
 document.getElementById("ocrMoreBtn").addEventListener("click", ocrMore);
 
-async function bulkByType(action, kind) {
+async function bulkByType(action) {
   const final = action === "accept" ? "verified" : "rejected";
   const pg = (DOC.pages || []).find(p => p.page === pageNo);
   const ids = pg ? pg.items
-    .filter(it => it.type === "text"
-      && (kind === "math" ? it.has_inline_math : !it.has_inline_math)
-      && it.status !== final)
+    .filter(it => it.type === "text" && it.status !== final)
     .map(it => it.id) : [];
   if (!ids.length) { alert(`nothing to ${action} on this page`); return; }
   try {
@@ -1178,12 +1195,19 @@ if (upKbBtn) upKbBtn.addEventListener("click", async () => {
   if (!sel || !sel.value) { kbMsg("pick a KB first"); return; }
   kbMsg("uploading…");
   upKbBtn.disabled = true;
-  try {
+  const send = async (overwrite) => {
     const r = await apiJson("/api/kb/" + encodeURIComponent(sel.value) + "/upload",
-      {method: "POST", body: JSON.stringify({doc_id: DOC.doc_id})});
+      {method: "POST", body: JSON.stringify({doc_id: DOC.doc_id, overwrite})});
+    if (r.status === 409) {
+      const clash = (r.existing || []).join(", ");
+      if (confirm(clash + " already in this KB. Overwrite?")) return send(true);
+      kbMsg("upload cancelled: " + clash + " already in KB");
+      return;
+    }
     kbMsg(r.ok ? "uploaded: " + (r.uploaded || []).join(", ") + " (skipped " + (r.skipped ?? 0) + ")"
               : "upload failed: " + (r.error || r.status));
-  } finally { upKbBtn.disabled = false; }
+  };
+  try { await send(false); } finally { upKbBtn.disabled = false; }
 });
 if (document.getElementById("kbBody")) window.kbRefresh();
 if (document.getElementById("upKbSel")) window.fillUpKbSel();

@@ -35,10 +35,17 @@ def _api(method, path, data=None):
         raise RuntimeError(f"api {method} {path} failed: {e}") from e
 
 
+def status():
+    """Full GET /api/inference/status body (active_model, runtime
+    context_length, ...). Raises RuntimeError on API failure, same as
+    every other Unsloth call."""
+    return _api("GET", "/api/inference/status")
+
+
 def current_model():
     """Path of the currently loaded model (or None). Non-fatal errors surface
     as RuntimeError, same as every other Unsloth call."""
-    body = _api("GET", "/api/inference/status")
+    body = status()
     active = body.get("active_model") or (body.get("loaded") or [None])[0]
     return active or None
 
@@ -129,7 +136,8 @@ def _selftest():
     payload shape."""
     assert config.CHAT_MODEL == "ibm-granite/granite-4.2-8b-GGUF", config.CHAT_MODEL
     assert MODELS == {"ocr": config.MODEL, "chat": config.CHAT_MODEL}, MODELS
-    assert config.CHAT_MAX_SEQ_LENGTH == 32768
+    assert config.CHAT_MAX_SEQ_LENGTH is None, \
+        "chat context-length override removed; backend default applies (profile can still set it)"
     assert config.OCR_MAX_SEQ_LENGTH is None
 
     sent = {}
@@ -143,7 +151,8 @@ def _selftest():
         assert sent["method"] == "POST" and sent["path"] == "/api/inference/load"
         assert sent["data"]["model_path"] == config.CHAT_MODEL
         assert sent["data"]["force_reload"], "load must set force_reload"
-        assert sent["data"]["max_seq_length"] == 32768
+        assert "max_seq_length" not in sent["data"], \
+            "chat load follows the backend default now (no built-in context override)"
         assert sent["data"]["gguf_variant"] == config.CHAT_GGUF_VARIANT, \
             "chat load must pin the cached GGUF variant"
         # literal path: posted verbatim, no max_seq_length (backend default)

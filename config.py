@@ -11,10 +11,11 @@ CHAT_MODEL = "ibm-granite/granite-4.2-8b-GGUF"  # chat model (download handled b
 # granite-4.1 repo needed an explicit pin for the same reason: its backend
 # default UD-Q4_K_XL was not cached while UD-Q6_K_XL was.)
 CHAT_GGUF_VARIANT = "Q6_K"
-# context_length override for the chat model: Qwen/granite-family models need
-# an explicit max_seq_length on load (backend default without it was 17408 for
-# Qwen 3.8). None -> omit the field (backend default).
-CHAT_MAX_SEQ_LENGTH = 32768
+# context_length override for the chat model on load (Qwen 3.8 needed an
+# explicit max_seq_length — backend default was 17408). None -> omit the
+# field and follow the backend's default; a per-model profile can still set
+# it via the Settings panel's context_length.
+CHAT_MAX_SEQ_LENGTH = None
 OCR_MAX_SEQ_LENGTH = None
 UPLOAD_DIR = os.environ.get(
     "VALIDATION_UPLOAD_DIR",

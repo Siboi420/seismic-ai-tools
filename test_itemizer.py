@@ -277,6 +277,18 @@ The value is in accordance with 21.2.1.
           "parse_table_caption caption with number")
     check(itemizer.parse_table_caption("Member capacities") == ("Member capacities", None),
           "parse_table_caption fallback: first non-empty line, no number")
+
+    # parse_figure_caption: mirrors parse_table_caption for Fig./Figure lines
+    check(itemizer.parse_figure_caption("") == (None, None),
+          "parse_figure_caption empty -> (None, None)")
+    check(itemizer.parse_figure_caption("Fig. 22.5.1—Frame elevations")
+          == ("Fig. 22.5.1—Frame elevations", "22.5.1"),
+          "parse_figure_caption 'Fig. N—…' dotted number")
+    check(itemizer.parse_figure_caption("Figure 2.1 Typical section")
+          == ("Figure 2.1 Typical section", "2.1"),
+          "parse_figure_caption 'Figure N.N …'")
+    check(itemizer.parse_figure_caption("Member layout") == ("Member layout", None),
+          "parse_figure_caption fallback: first non-empty line, no number")
     html_cap = '<table border="1"><tr><td>Table 21.2.1—Strength reduction factors $\\phi$</td></tr></table>'
     check(itemizer.unwrap_html_caption(html_cap)
           == "Table 21.2.1—Strength reduction factors $\\phi$",

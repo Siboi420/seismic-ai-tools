@@ -15,61 +15,80 @@ window.MathJax = {tex: {inlineMath: [["\\(", "\\)"], ["$", "$"]]}};
 <script src="https://cdn.jsdelivr.net/npm/marked@15/marked.min.js"></script>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: system-ui, sans-serif; margin: 0; background: var(--bg); color: var(--text); }
-  .wrap { max-width: 1400px; margin: 0 auto; padding: 16px; display: flex; flex-direction: column; height: 100vh; }
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+         -webkit-font-smoothing: antialiased; margin: 0; background: var(--bg); color: var(--text); }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 20px; display: flex; flex-direction: column; height: 100vh; }
   .muted { color: var(--muted); font-size: 13px; }
-  button { cursor: pointer; padding: 4px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); color: var(--text); }
-  button:hover { background: var(--surface-hover); }
-  input[type=text], select, textarea { border: 1px solid var(--line); border-radius: 4px; padding: 4px 6px; font: inherit; }
   #layout { display: flex; gap: 16px; align-items: stretch; flex: 1; min-height: 0; }
-  #side { flex: 0 0 260px; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 12px; }
+  #side { flex: 0 0 260px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+          box-shadow: var(--shadow-1); padding: 14px; }
   #side.hidden { display: none; }
-  #side h3 { margin: 0 0 8px; font-size: 15px; }
+  #side h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; letter-spacing: .01em; }
   #newRow { display: flex; gap: 6px; margin-bottom: 10px; }
   #newRow input { flex: 1; min-width: 0; }
-  #sessionList { display: flex; flex-direction: column; gap: 4px; max-height: 40vh; overflow-y: auto; }
-  .sess { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-radius: 4px; cursor: pointer; }
-  .sess:hover, .sess.active { background: var(--accent-bg); }
+  #newBtn { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; }
+  #newBtn:hover { background: var(--accent-solid-hover); border-color: var(--accent-solid-hover); }
+  #sessionList { display: flex; flex-direction: column; gap: 2px; max-height: 40vh; overflow-y: auto; }
+  .sess { display: flex; align-items: center; gap: 6px; padding: 7px 9px; border-radius: var(--radius-sm);
+          cursor: pointer; border-left: 2px solid transparent; }
+  .sess:hover { background: var(--surface-hover); }
+  .sess.active { background: var(--accent-bg); border-left-color: var(--accent); }
   .sess .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; }
+  .sess.active .name { color: var(--accent-text); font-weight: 500; }
   .sess .x { border: none; background: none; padding: 0 6px; font-size: 13px; color: var(--muted); }
   .sess .x:hover { color: var(--err); }
   .sess input { flex: 1; min-width: 0; font-size: 13px; }
   #wrap { flex: 1 1 auto; display: flex; flex-direction: column; gap: 12px; min-width: 0; }
-  #rowbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px; }
-  #sideToggle { border: none; background: none; color: var(--text); padding: 0 6px; font-size: 16px; line-height: 1; }
-  #sideToggle:hover { background: none; color: var(--muted); }
-  #thread { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 14px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1; min-height: 0; }
-  .msg { max-width: 78%; padding: 8px 12px; border-radius: 8px; font-size: 14px; line-height: 1.5; overflow-wrap: break-word; }
+  #rowbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--surface);
+            border: 1px solid var(--line); border-radius: var(--radius-lg); box-shadow: var(--shadow-1);
+            padding: 10px 14px; }
+  #sideToggle { border: none; background: none; color: var(--text); padding: 4px 6px; font-size: 16px; line-height: 1; }
+  #sideToggle:hover { background: var(--surface-hover); border-radius: var(--radius-sm); color: var(--text); }
+  #thread { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius-lg);
+            box-shadow: var(--shadow-1); padding: 16px; display: flex; flex-direction: column; gap: 12px;
+            overflow-y: auto; flex: 1; min-height: 0; }
+  .msg { max-width: 78%; padding: 10px 14px; border-radius: var(--radius-lg); font-size: 14px; line-height: 1.6;
+         overflow-wrap: break-word; }
   .msg p, .msg ul, .msg ol, .msg pre, .msg blockquote, .msg table { margin: .4em 0; }
-  .msg pre { background: var(--code-bg); padding: 6px 8px; border-radius: 4px; overflow-x: auto; }
+  .msg pre { background: var(--code-bg); padding: 8px 10px; border-radius: var(--radius-sm); overflow-x: auto; }
   .msg code { font-family: ui-monospace, Menlo, monospace; font-size: 13px; }
   .msg table { border-collapse: collapse; }
-  .msg th, .msg td { border: 1px solid var(--line-strong); padding: 3px 10px; }
+  .msg th, .msg td { border: 1px solid var(--line-strong); padding: 4px 10px; }
   .msg.assistant table { border-color: var(--line-strong); }
   .msg.assistant th { background: var(--accent-bg); color: var(--text); }
   .msg.user th { background: rgba(255,255,255,.25); }
-  .msg.user { align-self: flex-end; background: var(--accent); color: #fff; }
-  .msg.assistant { align-self: flex-start; background: var(--msg-assistant-bg); }
+  .msg.user { align-self: flex-end; background: var(--accent-solid); color: #fff;
+              border-bottom-right-radius: var(--radius-sm); }
+  .msg.assistant { align-self: flex-start; background: var(--msg-assistant-bg); border: 1px solid var(--line);
+                   border-bottom-left-radius: var(--radius-sm); }
   .tracewrap { align-self: flex-start; width: 96%; }
-  .trace { background: #0f172a; color: #d1d5db; border-radius: 8px; padding: 10px 12px; margin-top: 6px;
+  .trace { background: var(--code-bg); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius);
+           padding: 10px 14px; margin-top: 6px;
            font-family: ui-monospace, Menlo, monospace; font-size: 12px; white-space: pre-wrap; word-break: break-word; }
   .chev { cursor: pointer; user-select: none; font-size: 13px; color: var(--muted); margin-top: 4px; }
   .chev:hover { color: var(--text); }
   #inputRow { display: flex; gap: 8px; }
-  #msgInput { flex: 1; min-height: 44px; resize: vertical; }
+  #msgInput { flex: 1; min-height: 44px; resize: vertical; border-radius: var(--radius); padding: 10px 12px; }
+  #sendBtn { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; padding: 6px 20px; }
+  #sendBtn:hover { background: var(--accent-solid-hover); border-color: var(--accent-solid-hover); }
   #devToggle { display: flex; align-items: center; gap: 6px; }
   #settingsWrap { position: relative; }
   #settingsPanel { position: absolute; top: calc(100% + 6px); right: 0; z-index: 50; min-width: 360px;
                    max-height: 70vh; overflow: auto; background: var(--surface); border: 1px solid var(--line);
-                   border-radius: 6px; padding: 10px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.25); }
-  #settingsPanel fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 8px 0; }
-  #settingsPanel legend { font-size: 13px; padding: 0 6px; color: var(--muted); }
+                   border-radius: var(--radius-lg); padding: 12px 14px; box-shadow: var(--shadow-2); }
+  #settingsPanel fieldset { border: 1px solid var(--line); border-radius: var(--radius); margin: 8px 0;
+                            background: var(--surface-2); padding: 10px 12px; }
+  #settingsPanel legend { font-size: 12px; font-weight: 600; padding: 0 6px; color: var(--muted);
+                          text-transform: uppercase; letter-spacing: .04em; }
   .sflds { display: flex; gap: 10px 14px; flex-wrap: wrap; }
   .sflds label { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
   .sflds input { width: 90px; }
+  #settingsPanel .udef { font-size: 10px; opacity: .8; white-space: nowrap; }
   #settingsPanel .note { margin-top: 6px; }
   #moSel { margin-bottom: 8px; }
-  .empty { color: var(--muted); text-align: center; padding: 40px 0; }
+  #settingsSave { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; }
+  #settingsSave:hover { background: var(--accent-solid-hover); border-color: var(--accent-solid-hover); }
+  .empty { color: var(--muted); text-align: center; padding: 60px 0; font-size: 14px; }
   .kbtag { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -92,6 +111,7 @@ window.MathJax = {tex: {inlineMath: [["\\(", "\\)"], ["$", "$"]]}};
         <select id="kbSel"><option value="">no KB</option></select>
       </label>
       <label class="muted" id="devToggle"><input type="checkbox" id="devMode"> Developer mode</label>
+      <button id="thinkBtn" title="thinking mode: auto = per-question (default), on = always reason, off = fast path — click to cycle">🧠 auto</button>
       <span id="settingsWrap"><button id="settingsBtn">⚙ Settings</button>
       <div id="settingsPanel" hidden>
       <fieldset>
@@ -105,7 +125,7 @@ window.MathJax = {tex: {inlineMath: [["\\(", "\\)"], ["$", "$"]]}};
           <label>max_tokens <input type="number" step="1" id="g-max_tokens"></label>
           <label>context_length <input type="number" step="1" id="g-context_length"></label>
         </div>
-        <div class="muted note">empty = unset (inherit); context_length applies on next model load</div>
+        <div class="muted note">empty = inherit (the hint is what Unsloth applies); context_length applies on next model load</div>
       </fieldset>
       <fieldset>
         <legend>Override for one model</legend>
@@ -136,6 +156,13 @@ window.MathJax = {tex: {inlineMath: [["\\(", "\\)"], ["$", "$"]]}};
 
 <script>
 const SESSION = {{ session | tojson }};
+// per-session thinking mode: 'hybrid' (auto, default) / 'on' / 'off'
+let thinkingMode = SESSION?.thinking ?? 'hybrid';
+const THINK_NEXT = {hybrid: 'on', on: 'off', off: 'hybrid'};
+const THINK_LABEL = {hybrid: 'auto', on: 'on', off: 'off'};
+function renderThinkBtn() {
+  $('thinkBtn').textContent = '🧠 ' + THINK_LABEL[thinkingMode];
+}
 let kbs = [];
 const $ = id => document.getElementById(id);
 
@@ -257,14 +284,18 @@ function renderThread() {
     const d = document.createElement('div');
     d.className = 'msg ' + m.role;
     renderMarkdown(d, m.content);
-    if (m.role === 'assistant') d.appendChild(kbTag(m));
-    t.appendChild(d);
+    if (m.role === 'assistant') {
+      d.appendChild(kbTag(m));
+      t.appendChild(d);
+      if ($('devMode').checked && m.trace) renderTrace(m.trace, d);
+    } else {
+      t.appendChild(d);
+    }
     typeset(d);
   }
   t.scrollTop = t.scrollHeight;
 }
-function renderTrace(trace) {
-  const t = $('thread');
+function renderTrace(trace, afterEl) {
   const wrap = document.createElement('div');
   wrap.className = 'tracewrap';
   const chev = document.createElement('div');
@@ -281,8 +312,7 @@ function renderTrace(trace) {
   pre.hidden = true;
   pre.textContent = traceRows(trace);
   wrap.appendChild(chev); wrap.appendChild(pre);
-  t.appendChild(wrap);
-  t.scrollTop = t.scrollHeight;
+  afterEl.insertAdjacentElement('afterend', wrap);
 }
 function loadKBs() {
   window.kbFetch().then(j => {
@@ -305,7 +335,6 @@ async function sendMessage() {
   const content = inp.value.trim();
   if (!content || !SESSION) return;
   inp.value = '';
-  const dev = $('devMode').checked;
   const userDiv = document.createElement('div');
   userDiv.className = 'msg user';
   renderMarkdown(userDiv, content);
@@ -320,22 +349,18 @@ async function sendMessage() {
   try {
     const r = await fetch('/api/chat/sessions/' + encodeURIComponent(SESSION.id) + '/messages', {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({content, developer: dev, kb_id: $('kbSel').value || null})
+      body: JSON.stringify({content, kb_id: $('kbSel').value || null, thinking: thinkingMode})
     });
     const j = await r.json();
     if (!r.ok) {
       busyMsg.textContent = 'error: ' + (j.error || r.status);
       return;
     }
-    renderMarkdown(busyMsg, j.answer);
-    typeset(busyMsg);
-    if (dev && j.trace) renderTrace(j.trace);
     SESSION.messages = j.session.messages;
     // the POST carried the dropdown's kb_id and the server persisted it, so
     // the reply already used exactly the KB shown — no change/send race
     SESSION.kb_id = j.session.kb_id;
-    busyMsg.appendChild(kbTag(j.session.messages[j.session.messages.length - 1]));
-    $('thread').scrollTop = $('thread').scrollHeight;
+    renderThread();  // persisted traces render per message while dev mode is on
   } catch (e) {
     busyMsg.textContent = 'error: ' + e;
   } finally {
@@ -355,6 +380,17 @@ $('sendBtn').addEventListener('click', sendMessage);
 $('msgInput').addEventListener('keydown', e => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
 });
+$('devMode').addEventListener('change', () => renderThread());
+$('thinkBtn').addEventListener('click', () => {
+  thinkingMode = THINK_NEXT[thinkingMode];
+  renderThinkBtn();
+  if (!SESSION) return;
+  fetch('/api/chat/sessions/' + encodeURIComponent(SESSION.id), {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({thinking: thinkingMode})
+  }).then(r => r.json()).then(s => { if (s && s.thinking !== undefined) SESSION.thinking = s.thinking; });
+});
+renderThinkBtn();
 $('kbSel').addEventListener('change', () => {
   if (!SESSION) return;
   fetch('/api/chat/sessions/' + encodeURIComponent(SESSION.id), {
@@ -386,6 +422,31 @@ function readFields(prefix) {
   }
   return out;
 }
+// "(unsloth's default: …)" hint next to each field: the values the backend
+// itself applies when the field is omitted (from /api/settings/unsloth-defaults).
+async function loadUdef() {
+  let udef = {};
+  try { udef = await (await fetch('/api/settings/unsloth-defaults')).json(); }
+  catch (e) { return; }  // no hint is fine; never block the panel
+  for (const inp of document.querySelectorAll('#settingsPanel .sflds label input')) {
+    const key = inp.id.replace(/^(g|m)-/, '');
+    const d = udef[key];
+    if (d === undefined) continue;
+    let txt;
+    if (d === null) {
+      if (key === 'max_tokens') txt = "(unsloth's default: until EOS)";
+      else continue;  // context_length with no loaded model: no hint
+    } else if (key === 'context_length') {
+      txt = "(unsloth's default: " + d + " — this load)";
+    } else {
+      txt = "(unsloth's default: " + d + ")";
+    }
+    const lbl = inp.closest('label');
+    let s = lbl.querySelector('.udef');
+    if (!s) { s = document.createElement('span'); s.className = 'udef'; lbl.appendChild(s); }
+    s.textContent = txt;
+  }
+}
 async function loadSettingsPanel() {
   try { settings = await (await fetch('/api/settings')).json(); }
   catch (e) { settings = {global: {}, models: {}}; }
@@ -410,6 +471,7 @@ async function loadSettingsPanel() {
   $('moClear').disabled = !settingsModels.length;
   fillFields('g-', settings.global);
   fillFields('m-', {});
+  await loadUdef();
 }
 async function saveSettings() {
   const key = $('moSel').value;

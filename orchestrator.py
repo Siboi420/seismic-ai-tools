@@ -50,10 +50,10 @@ def _loaded_model():
 DEFAULT_KB_NAME = "Verified OCR"  # resolved by name at runtime (KBs can be renamed/deleted)
 TOP_K = 3
 MAX_ITERS = 8
-# Cap output so a reasoning model can't spend the whole window on
-# chain-of-thought and stop with an empty reply. Real answers need ~1-2k;
-# 12000 leaves headroom while bounding worst-case CoT.  # ponytail: fixed cap,
-# revisit if a legit answer ever needs >12k output tokens.
+# The output cap follows Unsloth's own default (nothing sent unless the user
+# sets max_tokens via the Settings panel); the burn-the-window-on-CoT
+# empty-reply failure mode is handled by answer_turn's dead-end guard, not
+# the token cap.
 
 # From docs/infrastructure.md "Guardrails".
 SYSTEM_PROMPT = (
@@ -224,11 +224,12 @@ def tool_result(mode, call_id, result):
 
 def chat(messages, tools, max_tokens=None, thinking=False):
     """One /v1/chat/completions round-trip against the loaded model's
-    generation profile. max_tokens None -> the resolved profile's cap
-    (profiles.DEFAULTS fallback). Sampling params that resolve to None
-    (top_k/top_p/min_p unless set) are omitted from the payload so they
-    stay off. enable_thinking is sent EXPLICITLY every request: the GGUF
-    backend loads with thinking on (Studio-managed), and an explicit
+    generation profile. Every field resolving to None is OMITTED from the
+    payload (max_tokens included), so the backend's own generation
+    defaults apply unless the user explicitly set a field (Settings panel
+    / per-model override). max_tokens: explicit cap, else the resolved
+    profile's value. enable_thinking is sent EXPLICITLY every request: the
+    GGUF backend loads with thinking on (Studio-managed), and an explicit
     False is the only way to run the fast path per query."""
     model = _loaded_model()
     p = profiles.resolve(model)
@@ -236,12 +237,14 @@ def chat(messages, tools, max_tokens=None, thinking=False):
         "model": model,
         "messages": messages,
         "tools": tools,
-        "max_tokens": max_tokens or p["max_tokens"],
         "enable_thinking": thinking,
     }
-    for k in ("temperature", "top_k", "top_p", "min_p", "repeat_penalty"):
+    for k in ("temperature", "top_k", "top_p", "min_p", "repeat_penalty",
+              "max_tokens"):
         if p[k] is not None:
             body[k] = p[k]
+    if max_tokens is not None:
+        body["max_tokens"] = max_tokens
     return _api("POST", "/v1/chat/completions", body)["choices"][0]["message"]
 
 
@@ -364,7 +367,7 @@ def _wants_retry(answer, steps, question):
     return False
 
 
-def answer_turn(user_turn, history, kb_id, max_tokens=None):
+def answer_turn(user_turn, history, kb_id, max_tokens=None, thinking=None):
     """One user turn in a session: (retrieval?) + chat loop.
 
     history: prior messages [{"role": "user"|"assistant", "content": …}].
@@ -372,11 +375,19 @@ def answer_turn(user_turn, history, kb_id, max_tokens=None):
     max_tokens: explicit cap; None falls back to the resolved profile's
     max_tokens (set in chat()).
 
-    Thinking policy (per-query enable_thinking): ambiguous/judgment
-    questions think on the first pass; straightforward parameter extraction
-    runs the fast non-thinking path, escalating to thinking ONCE only when
-    the fast pass fails (empty answer, tool-arg error, or a calc question
-    answered without tools).
+    thinking: mode override.
+      None  = hybrid (default): ambiguous/judgment questions think on the
+              first pass; straightforward parameter extraction runs the
+              fast non-thinking path, escalating to thinking ONCE only when
+              the fast pass fails (empty answer, tool-arg error, or a calc
+              question answered without tools).
+      True  = always think on the first pass.
+      False = never think on the first pass.
+    Dead-end guard (all modes): if the first pass returns an EMPTY answer
+    (the whole generation went into the thinking block, or the model
+    produced nothing), retry ONCE with the opposite pass so a turn never
+    ends without a final answer. Forced modes are otherwise respected
+    literally — a single non-empty pass is never retried.
     Returns (answer, trace); the trace's first step (when kb_id is set) is
     {"kind": "retrieval", "chunks": […]}."""
     trace = []
@@ -391,13 +402,25 @@ def answer_turn(user_turn, history, kb_id, max_tokens=None):
         # the caller answers from general knowledge
         context = "(no knowledge base attached)"
         system = SYSTEM_PROMPT_BARE
-    thinking = _is_ambiguous(user_turn)
+    mode = thinking  # None = hybrid, True/False = forced
+    if mode is None:
+        think = _is_ambiguous(user_turn)
+    else:
+        think = mode
     answer, steps = run_loop(
-        _question_messages(user_turn, history, context, system), load_tools(), max_tokens, thinking)
-    if not thinking and _wants_retry(answer, steps, user_turn):
-        # one-shot escalation: the fast path failed, try once with thinking
+        _question_messages(user_turn, history, context, system), load_tools(), max_tokens, think)
+    if (answer or "").strip():
+        if mode is None and not think and _wants_retry(answer, steps, user_turn):
+            # one-shot escalation: the fast path looked wrong (calc question
+            # answered without a tool call) — try once with thinking
+            answer, steps = run_loop(
+                _question_messages(user_turn, history, context, system), load_tools(), max_tokens, True)
+    else:
+        # dead end: the generation burned its budget on thinking and emitted
+        # no final answer (or the model produced nothing) — retry ONCE with
+        # the opposite pass so every turn yields a real answer
         answer, steps = run_loop(
-            _question_messages(user_turn, history, context, system), load_tools(), max_tokens, True)
+            _question_messages(user_turn, history, context, system), load_tools(), max_tokens, not think)
     return answer, trace + steps
 
 
@@ -492,19 +515,18 @@ def selftest():
     globals()["_api"] = fake_api
     try:
         profiles.load_settings = lambda: {}
-        chat([{"role": "user", "content": "q"}], load_tools(), 12000)
+        chat([{"role": "user", "content": "q"}], load_tools(), None)
     finally:
         globals()["_api"] = saved_api
         profiles.load_settings = saved_load_settings
-    # defaults flow into the payload; unset sampling params stay absent;
-    # the fast path is the default (enable_thinking explicitly False)
+    # no settings on disk -> every generation param is unset and must be
+    # OMITTED (follow Unsloth defaults); only the explicit enable_thinking
+    # (fast path) and the structural keys are sent.
     d = sent["data"]
-    assert d["temperature"] == 0.2, d
-    assert d["repeat_penalty"] == 1.1, d
-    assert d["max_tokens"] == 12000, d
     assert d["enable_thinking"] == False, "default chat() must send enable_thinking=false"  # noqa: E712
-    assert "top_k" not in d and "top_p" not in d and "min_p" not in d, \
-        "unset sampling params must be omitted, not sent as null"
+    for k in ("temperature", "top_k", "top_p", "min_p", "repeat_penalty",
+              "max_tokens"):
+        assert k not in d, f"unset {k} must be omitted (follow Unsloth defaults), got {d}"
 
     # a profile override flows into the payload. chat() resolves the profile
     # under the LOADED model (which may be gemma/anything on a live box), so
@@ -538,8 +560,10 @@ def selftest():
     d = sent["data"]
     assert d["temperature"] == 0.7 and d["top_k"] == 33, d
     assert d["min_p"] == 0.05, d
-    assert d["repeat_penalty"] == 1.1, "unset repeat_penalty keeps the default"
-    assert d["max_tokens"] == 12000, "None max_tokens -> profile default"
+    assert "repeat_penalty" not in d, \
+        f"unset repeat_penalty must be omitted, got {d}"
+    assert "max_tokens" not in d, \
+        f"None max_tokens must be omitted (Unsloth default), got {d}"
 
     # explicit thinking=True flows into the payload too
     saved_api = globals()["_api"]
@@ -572,27 +596,52 @@ def selftest():
         seen.append(thinking)
         bare_sys.append(messages[0]["content"])
         bare_sys.append(messages[-1]["content"])  # user turn incl. context
-        if answer:
-            return answer, [{"kind": "answer", "content": answer}]
-        return "", [{"kind": "answer", "content": ""}]
+        q = messages[-1]["content"]
+        if "empty" in q:
+            return "", [{"kind": "answer", "content": ""}]
+        return f"ans:{q}", [{"kind": "answer", "content": f"ans:{q}"}]
 
     globals()["retrieve"] = lambda q, kb_id: ["chunk one", "chunk two"]
     globals()["run_loop"] = fake_run_loop
     try:
+        # extraction question, non-empty: fast first pass, then the ONE-SHOT
+        # calc-style escalation (answered without a tool call)
         answer_turn("what is Av,min for b_w=350, f_c=28, f_yt=420?", [], None)
+        # ambiguous keyword, non-empty: thinking first pass, no retry
         answer_turn("which design should I assume for this beam?", [], None)
-        answer_turn("calculate Vc for the beam", [], None)
+        # calc-style no-keyword, non-empty: fast, then escalate (no tool call)
+        answer_turn("calculate shear capacity for the beam", [], None)
         # KB attached: the RAG prompt (source-citation guardrails) is used
         answer_turn("what is Av,min for b_w=350, f_c=28, f_yt=420?", [], "kb-1")
+        # forced overrides with non-empty answers: single pass, no flip
+        answer_turn("calculate Vc for the beam", [], None, thinking=False)
+        answer_turn("which design should I assume for this beam?", [], None, thinking=True)
+        # dead-end (empty) in EVERY mode -> one flip to the opposite pass
+        answer_turn("empty case", [], None, thinking=False)  # fast -> think
+        answer_turn("empty case", [], None, thinking=True)   # think -> fast
+        answer_turn("should I assume an empty case?", [], None)  # hybrid think -> fast
     finally:
         globals()["run_loop"] = saved_run_loop
         globals()["retrieve"] = saved_retrieve
-    # extraction question: fast (False) then escalate (True)
+    # extraction question (non-empty): fast then calc-style escalation
     assert seen[:2] == [False, True], f"fast-then-escalate expected, got {seen[:2]}"
     # ambiguous design question: thinking on first pass, no retry
     assert seen[2:3] == [True], f"ambiguous routes to thinking first pass, got {seen[2:3]}"
     # calc-style with no keyword: fast (False) then retry (True)
     assert seen[3:5] == [False, True], f"calc retry expected, got {seen[3:5]}"
+    # forced modes with a non-empty answer: exactly one pass, respected
+    # literally (forced off -> fast at idx 7, forced on -> think at idx 8)
+    assert seen[7:9] == [False, True], \
+        f"forced non-empty expected [False, True], got {seen[7:9]}"
+    # dead-end guard: empty answers flip ONCE to the opposite pass in forced
+    # off (fast->think), forced on (think->fast), and hybrid ambiguous
+    # (think->fast) — a turn never ends on an empty answer
+    assert seen[9:11] == [False, True], \
+        f"forced-off dead-end flip expected [False, True], got {seen[9:11]}"
+    assert seen[11:13] == [True, False], \
+        f"forced-on dead-end flip expected [True, False], got {seen[11:13]}"
+    assert seen[13:15] == [True, False], \
+        f"hybrid-ambiguous dead-end flip expected [True, False], got {seen[13:15]}"
     # no-KB sessions answer from general knowledge, not source-guardrail refusals
     # (bare_sys alternates [system, user-with-context, system, ...] per pass)
     assert all(s == SYSTEM_PROMPT_BARE for s in bare_sys[0:10:2]), \
@@ -619,8 +668,8 @@ def selftest():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--question", help="question to ask (default: read from stdin)")
-    parser.add_argument("--max-tokens", type=int, default=12000,
-                        help="chat completion token cap (default 12000; bounds reasoning so it can't burn the whole window and stop empty)")
+    parser.add_argument("--max-tokens", type=int, default=None,
+                        help="chat completion token cap (default: Unsloth's own default; omit to follow the backend)")
     parser.add_argument("--selftest", action="store_true", help="run offline checks and exit")
     args = parser.parse_args()
 

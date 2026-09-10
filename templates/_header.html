@@ -5,55 +5,104 @@
    The page templates hard-code data-theme="dark" on <html> and an inline
    head script flips it to the user's stored choice before first paint;
    #themeBtn below writes localStorage.theme. The PDF preview (#pageImg)
-   stays white by design; .trace/.toast are already dark in both themes. #}
+   stays white by design; .trace/.toast follow the theme tokens like everything
+   else. #}
 <style>
   :root { color-scheme: light;
-    --bg:#f7f7f7; --surface:#fff; --surface-hover:#eee; --text:#222; --muted:#666;
-    --line:#ccc; --line-strong:#d0d5dd;
-    --accent:#2563eb; --accent-bg:#eef2ff; --accent-text:#3730a3;
-    --ok:#065f46; --ok-bg:#ecfdf5; --ok-border:#22c55e;
-    --err:#991b1b; --err-bg:#fef2f2; --err-border:#ef4444;
+    --radius-sm:6px; --radius:10px; --radius-lg:14px;
+    --bg:#f5f7fa; --surface:#fff; --surface-2:#f9fafb; --surface-hover:#eef1f5;
+    --text:#101828; --muted:#667085;
+    --line:#e4e7ec; --line-strong:#d0d5dd;
+    --accent:#2563eb; --accent-hover:#1d4ed8; --accent-bg:#eef2ff; --accent-text:#3730a3;
+    --accent-ring:rgba(37,99,235,.25);
+    --accent-solid:#2563eb; --accent-solid-hover:#1d4ed8;
+    --ok:#065f46; --ok-bg:#ecfdf5; --ok-border:#22c55e; --ok-tint:rgba(34,197,94,.07);
+    --err:#991b1b; --err-bg:#fef2f2; --err-border:#ef4444; --err-tint:rgba(239,68,68,.06);
     --warn-bg:#fff7ed; --warn-text:#9a3412;
     --purple-bg:#fdf4ff; --purple-text:#86198f;
     --gray-bg:#f3f4f6; --gray-text:#374151;
     --msg-assistant-bg:#f3f4f6; --code-bg:#f1f3f5; --merged-bg:#f5f3ff;
     --ocrbar-bg:#eff6ff; --ocrbar-border:#bfdbfe;
+    --shadow-1:0 1px 2px rgba(16,24,40,.06); --shadow-2:0 12px 32px rgba(16,24,40,.12);
+    --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23667085' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
   :root[data-theme="dark"] { color-scheme: dark;
-    --bg:#0f172a; --surface:#1e293b; --surface-hover:#334155; --text:#e2e8f0; --muted:#94a3b8;
-    --line:#334155; --line-strong:#475569;
-    --accent:#3b82f6; --accent-bg:#1e3a8a; --accent-text:#a5b4fc;
-    --ok:#34d399; --ok-bg:rgba(16,185,129,.12); --ok-border:#10b981;
-    --err:#f87171; --err-bg:rgba(239,68,68,.12); --err-border:#ef4444;
+    --bg:#0b0f17; --surface:#131a26; --surface-2:#1a2333; --surface-hover:#243046;
+    --text:#e6edf7; --muted:#8b98ad;
+    --line:#222c3d; --line-strong:#33415a;
+    --accent:#3b82f6; --accent-hover:#60a5fa; --accent-bg:rgba(59,130,246,.14); --accent-text:#93c5fd;
+    --accent-ring:rgba(59,130,246,.32);
+    --accent-solid:#2563eb; --accent-solid-hover:#1d4ed8;
+    --ok:#34d399; --ok-bg:rgba(16,185,129,.12); --ok-border:#10b981; --ok-tint:rgba(16,185,129,.09);
+    --err:#f87171; --err-bg:rgba(239,68,68,.12); --err-border:#ef4444; --err-tint:rgba(239,68,68,.09);
     --warn-bg:rgba(249,115,22,.12); --warn-text:#fdba74;
     --purple-bg:rgba(217,70,239,.12); --purple-text:#e879f9;
-    --gray-bg:#334155; --gray-text:#cbd5e1;
-    --msg-assistant-bg:#334155; --code-bg:#0f172a; --merged-bg:rgba(167,139,250,.12);
-    --ocrbar-bg:#172554; --ocrbar-border:#1e40af;
+    --gray-bg:#243046; --gray-text:#cbd5e1;
+    --msg-assistant-bg:#1a2333; --code-bg:#0d131e; --merged-bg:rgba(167,139,250,.12);
+    --ocrbar-bg:#0f1e3d; --ocrbar-border:#1e3a6e;
+    --shadow-1:0 1px 2px rgba(0,0,0,.45); --shadow-2:0 12px 32px rgba(0,0,0,.5);
+    --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b98ad' stroke-width='1.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
-  /* form fields follow the theme (pages keep their own border/padding rules) */
-  input, select, textarea { background: var(--surface); color: var(--text); }
-  .topbar { display: flex; align-items: flex-end; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
-  .tabs { display: flex; gap: 4px; }
-  .tabs a { text-decoration: none; padding: 6px 16px; border: 1px solid var(--line);
-            border-bottom: none; border-radius: 6px 6px 0 0; background: var(--surface); color: var(--text);
-            font-size: 14px; }
-  .tabs a.active { background: var(--accent); border-color: var(--accent); color: #fff; }
-  #modelBar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; padding-bottom: 2px; }
+  * { scrollbar-color: var(--line-strong) transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+  }
+  /* Shared control layer — the single source of truth for buttons/inputs/selects
+     on both pages (index.html and chat.html no longer duplicate these rules;
+     they keep only page-specific overrides like #modelBar button or input.order). */
+  button { cursor: pointer; padding: 6px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+           background: var(--surface-2); color: var(--text); font: inherit; font-weight: 500;
+           transition: background-color 120ms, border-color 120ms, box-shadow 120ms, transform 60ms; }
+  button:hover { background: var(--surface-hover); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:active { transform: translateY(1px); }
+  button:focus-visible, a:focus-visible {
+    outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: var(--radius-sm);
+  }
+  input[type=text], input[type=number], input[type=file], select, textarea {
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 6px 9px; font: inherit;
+    transition: border-color 120ms, box-shadow 120ms;
+  }
+  input:focus, select:focus, textarea:focus {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
+  }
+  input[type=checkbox] { accent-color: var(--accent); }
+  select { appearance: none; padding-right: 28px; background-image: var(--select-chevron);
+           background-repeat: no-repeat; background-position: right 9px center; }
+  .topbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .tabs { display: flex; gap: 2px; background: var(--surface); border: 1px solid var(--line);
+          border-radius: var(--radius); padding: 4px; box-shadow: var(--shadow-1); }
+  .tabs a { text-decoration: none; padding: 6px 16px; border: none; border-radius: var(--radius-sm);
+            background: transparent; color: var(--muted); font-size: 14px; font-weight: 500;
+            transition: background-color 120ms, color 120ms; }
+  .tabs a:hover { color: var(--text); }
+  .tabs a.active { background: var(--accent-solid); color: #fff; }
+  .tabs a.active:hover { color: #fff; }
+  #modelBar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-left: auto; }
   #modelBar .muted { font-size: 12px; }
   #modelChip { font-size: 12px; background: var(--accent-bg); border: 1px solid var(--line);
-               border-radius: 10px; padding: 2px 10px; max-width: 340px; overflow: hidden;
-               text-overflow: ellipsis; white-space: nowrap; }
+               border-radius: 999px; padding: 3px 12px; max-width: 340px; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
   #modelChip.loaded { background: var(--ok-bg); color: var(--ok); }
   #modelSel { font-size: 12px; max-width: 280px; }
-  #modelBar button { font-size: 12px; padding: 3px 10px; }
+  #modelBar button { font-size: 12px; padding: 5px 12px; }
   #modelBar button:disabled, #modelSel:disabled { opacity: .5; cursor: default; }
-  #toasts { position: fixed; top: 10px; right: 10px; z-index: 99; display: flex;
-            flex-direction: column; gap: 6px; max-width: 420px; }
-  .toast { background: #111827; color: #fff; padding: 8px 12px; border-radius: 6px;
-           font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,.25); white-space: pre-wrap; }
-  .toast.error { background: #991b1b; }
-  .toast.done { background: #065f46; }
+  #loadBtn { background: var(--accent-solid); border-color: var(--accent-solid); color: #fff; }
+  #loadBtn:hover:not(:disabled) { background: var(--accent-solid-hover); border-color: var(--accent-solid-hover); }
+  #themeBtn { font-size: 14px; padding: 5px 10px; }
+  #toasts { position: fixed; top: 14px; right: 14px; z-index: 99; display: flex;
+            flex-direction: column; gap: 8px; max-width: 420px; }
+  .toast { background: var(--surface); color: var(--text); padding: 10px 14px;
+           border: 1px solid var(--line); border-left: 3px solid var(--accent);
+           border-radius: var(--radius-sm); font-size: 13px; box-shadow: var(--shadow-2);
+           white-space: pre-wrap; }
+  .toast.error { border-left-color: var(--err-border); }
+  .toast.done { border-left-color: var(--ok-border); }
 </style>
 
 <div class="topbar">

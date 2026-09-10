@@ -59,6 +59,14 @@ EQUATION_PROMPT = (
     "Output math only: no tables, no HTML markup, no surrounding text."
 )
 
+# Dedicated prompt for figure crops (manually drawn box): describe the
+# diagram/figure in plain readable text — no tables/HTML/LaTeX.
+FIGURE_PROMPT = (
+    "Describe this figure or diagram in plain readable text: what it shows, "
+    "its labels, axes, and key values. "
+    "Do NOT use tables, HTML markup, or LaTeX."
+)
+
 
 # ── Image Encoding ──────────────────────────────────────────────────────────
 
@@ -79,13 +87,19 @@ def encode_image(image_path):
 
 # ── Page ranges ─────────────────────────────────────────────────────────────
 
+# ASCII hyphen + en/em dashes are all accepted range separators — pasted
+# ranges from word processors/docs often carry the Unicode dash.
+_DASH = r"[-\u2013\u2014]"
+
+
 def parse_page_range(s):
     """Parse "N" -> (N, N) or "N-M" -> (N, M); invalid -> None.
 
-    1-indexed, inclusive. Rejects empty, non-numeric, start < 1, end < start.
+    1-indexed, inclusive. Accepts ASCII hyphen, en-dash, or em-dash as the
+    separator. Rejects empty, non-numeric, start < 1, end < start.
     """
     s = (s or "").strip()
-    m = re.fullmatch(r"(\d+)(?:-(\d+))?", s)
+    m = re.fullmatch(r"(\d+)(?:%(sep)s(\d+))?" % {"sep": _DASH}, s)
     if not m:
         return None
     a, b = m.groups()
@@ -99,17 +113,30 @@ def parse_page_range(s):
 
 
 def parse_page_ranges(s):
-    """Parse comma-separated ranges "2-3, 4-9" -> [(2,3),(4,9)]; invalid -> None.
+    """Parse comma-separated ranges -> [(start, end), ...]; invalid -> None.
 
-    Each chunk is a single range per parse_page_range ("N" or "N-M"); a
-    blank/whitespace-only input yields None. Overlapping chunks are merged in
-    pdf_to_images.
+    "2-3, 4-9" -> [(2,3),(4,9)] (each chunk a single parse_page_range).
+    Exactly two bare numbers, "20, 30", mean the RANGE 20-30 -> [(20,30)]
+    (user-confirmed intent); three or more bare numbers, "20, 30, 40", are
+    individual pages -> [(20,20),(30,30),(40,40)]. A blank/whitespace-only
+    input yields None. Overlapping chunks are merged in pdf_to_images.
     """
     s = (s or "").strip()
     if not s:
         return None
+    chunks = [c.strip() for c in s.split(",")]
+    if len(chunks) == 2 and all(re.fullmatch(r"\d+", c) for c in chunks):
+        # "20, 30" is a range, not two pages; validation mirrors
+        # parse_page_range (reversed "30, 20" -> None -> caller 400s)
+        try:
+            a, b = (int(c) for c in chunks)
+        except ValueError:
+            return None
+        if a < 1 or b < a:
+            return None
+        return [(a, b)]
     ranges = []
-    for chunk in s.split(","):
+    for chunk in chunks:
         pr = parse_page_range(chunk)
         if pr is None:
             return None

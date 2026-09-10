@@ -59,7 +59,13 @@ Two things live here:
    RAG + tool-calling engine the chat route imports; no HTTP server of its own),
    config, schemas (empty), docs (`docs/rag-query-guidance.md` = how to query the
    KB for table/formula questions; `docs/infrastructure.md`, `docs/corrections.md`,
-   `docs/ocr-fix-context.md`, `docs/voice-roadmap.md` = voice/AIRI roadmap, docs-only).
+   `docs/ocr-fix-context.md`, `docs/voice-roadmap.md` = voice/AIRI roadmap,
+   docs-only, and `docs/screenshots/` = README UI captures). Related to the
+   captures: `templates/index.html` once rendered "page undefined" in every item
+   card's meta (the render loop didn't stamp `page` — only `flatItems`/bulk did);
+   fixed by spreading `page` at render time. Screenshots are taken with a one-off
+   CDP driver (headless Chromium + websocket-client + PIL crops — no model runs);
+   the driver lives in /tmp, only the PNGs are committed.
 
 Related but separate: `~/Projects/StructuralEngineeringWorkspace/` (OpenSeesPy research,
 has its own AGENTS.md). This app is the human-review step feeding that research.
@@ -89,9 +95,11 @@ has its own AGENTS.md). This app is the human-review step feeding that research.
   - **Chat model**: `ibm-granite/granite-4.2-8b-GGUF` (`config.CHAT_MODEL`; the
     old Qwen 3.8 / granite-4.1 constants are gone). GGUF download/reload is the
     user's step — our code only
-    calls load/unload. Loaded at `context_length 32768` (`config.CHAT_MAX_SEQ_LENGTH`;
-    Qwen needed that override — backend default was 17408). The chat engine caps
-    `max_tokens` at 12000.
+    calls load/unload. Loaded at the backend's own context_length
+    (`config.CHAT_MAX_SEQ_LENGTH = None` — field omitted; the old 32768
+    override existed because Qwen's backend default was 17408). No `max_tokens`
+    cap sent by default — generation params follow Unsloth's own defaults
+    (settable via the Settings panel).
   - **Model unloads** on `POST /api/inference/unload` — the body REQUIRES `model_path`
     (verified 2026-09-03: `{}` → 422 "Field required"); a path that isn't loaded is a
     harmless no-op (`{"status":"unloaded"}`). `{"force_cancel_active":true}` kills
@@ -188,31 +196,52 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   page after the highest stamped order, in append order; deleted items are
   not resurrected) — without touching review state.
   The draw-box route `/bbox_ocr` accepts an optional `type` (`auto` default, or
-  `equation`/`table`/`text`, validated with 400 **before** OCR runs): `auto` keeps
+  `equation`/`table`/`text`/`figure`, validated with 400 **before** OCR runs): `auto` keeps
   the old parse-the-crop + caption-attach behavior, forced kinds append ONE item
   via `append_bbox_item` (raw OCR text as `content`, no caption attach; `text`
-  sets `has_inline_math` from `INLINE_MATH_RE`, `equation` captures
+  and `figure`
+  set `has_inline_math` from `INLINE_MATH_RE`, `equation` captures
   `eq_num`/`eq_letters` via `eq_refs`, and `chapter`/`section` inherit from the
   page's latest item that carries them). Forced **equation** draws use
   `EQUATION_PROMPT` (LaTeX math only — GLM otherwise wraps equation crops in
-  HTML `<table>` artifacts under the generic markdown prompt). `equation`/`text`
-  kinds are defensively stripped of HTML table wrapper tags (`HTML_TABLE_TAG_RE`,
+  HTML `<table>` artifacts under the generic markdown prompt); forced
+  **figure** draws use `FIGURE_PROMPT` (plain readable description, no
+  tables/HTML/LaTeX). `equation`/`text`/`figure`
+  kinds are defensively stripped of ALL HTML tags (`HTML_TAG_RE`,
   math/content kept; forced `table` draws keep the raw text since the wrapper may
-  be the only structure). `/item/<id>/delete` removes an item from
+  be the only structure), and **equation** content additionally loses the math
+  delimiters GLM emits (`MATH_DELIMITER_RE`: `$$`, `$`, `\[`, `\]`, `\(`, `\)`)
+  so the stored content is **bare LaTeX** (the UI wraps it in `\[…\]`; the strip
+  runs before `eq_refs`, so `(a)`/`(22.5.1.10a)` markers still capture).
+  The caption route `/item/<id>/caption` now accepts `table` AND `figure` items
+  (figures parse with `parse_figure_caption` → `caption` + `figure_number`,
+  tables keep `table_number`), and `apply_action` carries `figure_number` in
+  verified/rejected JSON next to `caption`.
+  The incremental `/ocr/<doc_id>` branch builds `new_pages` as `[(p, p)]`
+  PAIRS (never flat ints — a flat list like `[20, 30]` would be misread by
+  `pdf_to_images` as ONE `(20, 30)` range: the "20, 30" accidental-range bug).
+  `/item/<id>/delete` removes an item from
   its page and unlinks both `verified/` and `rejected/` copies (404 if missing).
   **Chat/KB/model routes (one-server merge 2026-09-03):** `GET /chat` renders
   `templates/chat.html` (session loaded from `?s=<sid>`, else null). Chat sessions
   are one JSON file per session under `BASE/sessions/` (gitignored; routes read the
   `SESSIONS_DIR` module global, so smoketest overrides it): `{id, name, kb_id|null,
-  created_at, updated_at, messages:[{role, content, ts}]}`. `GET/POST
-  /api/chat/sessions` (create requires non-empty `name` → 400; 201 with the
+  created_at, updated_at, messages:[{role, content, ts, kb_id?, kb_name?, trace?}]}`
+  plus `thinking` ("off"|"hybrid"|"on", default "hybrid"). `GET/POST
+  /api/chat/sessions` (create requires non-empty `name` → 400; accepts a
+  `thinking` start mode; 201 with the
   session), `GET/PATCH/DELETE /api/chat/sessions/<sid>` (sid regex-validated;
-  PATCH accepts `name` and/or `kb_id` — `null` clears; malformed sid → 404),
-  `POST /api/chat/sessions/<sid>/messages` `{content, developer?, kb_id?}` →
-  appends the user turn, runs `orchestrator.answer_turn(content, history, kb_id)`
+  PATCH accepts `name`, `kb_id` (`null` clears) and/or `thinking` — invalid
+  mode coerced to "hybrid" by `_clean_thinking`; malformed sid → 404),
+  `POST /api/chat/sessions/<sid>/messages` `{content, kb_id?, thinking?}` →
+  appends the user turn, runs `orchestrator.answer_turn(content, history, kb_id,
+  thinking=<None|True|False>)` — the body `thinking` rides along like the
+  kb dropdown (no change/send race) and persists; "hybrid" → None, "on" →
+  True, "off" → False
   (no positional max-tokens — the resolved generation profile supplies it),
-  persists both turns, returns `{answer, session, trace?}` — the trace key is
-  present only when `developer` is truthy (live-only, never persisted); a failed
+  persists both turns, returns `{answer, session}` — the trace now lives INSIDE
+  every assistant message as `session.messages[].trace` (persisted always, no
+  top-level `trace` key, no `developer` body field); a failed
   turn pops the user message and returns 502, keeping the session retryable.
   The POST mirrors the PATCH `kb_id` semantics: a `kb_id` field in the body
   overwrites the session's stored value (the send carries the dropdown, so the
@@ -226,13 +255,27 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   (`{"global": {}, "models": {}}` when missing/corrupt, never a 500); `POST
   /api/settings` sanitizes + persists via `profiles.save_settings` and returns
   the clean shape (bad values — NaN/Inf/garbage/non-object sections → 400).
+  `GET /api/settings/unsloth-defaults` → the backend's OWN generation
+  defaults for the Settings panel hints: sampler defaults parsed from the
+  backend's `/openapi.json` ChatCompletionRequest schema (no key needed,
+  cached 5 min in `profiles.unsloth_defaults`) plus the loaded model's
+  runtime `context_length` from `models.status()`; any failure degrades to
+  `{}` (a hint is never a 500).
   `MAX_CHAT_TOKENS` is gone (moved into `profiles.DEFAULTS`).
   KB routes: `GET /api/kb` (list via `rag.list_kbs`, 502 on backend RuntimeError),
   `POST /api/kb` (create, 400 empty name), `PATCH/DELETE /api/kb/<kb_id>`
-  (rename/delete; id regex-validated), `POST /api/kb/<kb_id>/upload` `{doc_id}`
-  or `{"doc_id":"__all__"}` → `{uploaded:[filenames], skipped:n}` (single doc
+  (rename/delete; id regex-validated), `POST /api/kb/<kb_id>/upload` `{doc_id,
+  overwrite?}`
+  or `{"doc_id":"__all__", overwrite?}` → `{uploaded:[filenames], skipped:n}` (single doc
   404s when it has no verified items; `__all__` uploads every verified doc and
-  counts doc dirs that yielded nothing).
+  counts doc dirs that yielded nothing). **Overwrite (2026-10-13):** the route
+  first lists the KB's documents (`rag.list_docs(kb_id)`) into
+  `{filename: document_id}`; a target `{doc_id}.md` already present with
+  `overwrite` absent/false → `OverwriteRequired` → **409** `{existing:[...]}`
+  with NOTHING uploaded (all-or-nothing, so cancelling leaves the KB
+  unchanged); `overwrite: true` deletes the old document
+  (`rag.delete_doc(document_id)`) then re-uploads. `"__all__"` follows the
+  same rule (clash check computed before any upload).
   Model: `GET /api/model` → `{loaded, available, job}` — `loaded` is the raw
   resident path (string or null); `available` is `[{path, name, variant?}]` —
   one entry PER INSTALLED QUANT of each GGUF model actually cached on disk,
@@ -260,7 +303,7 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   when nothing loaded) before `models.load(path, variant)` — unload-before-load is the
   single-model invariant. The worker also resolves the target's profile
   `context_length` and passes it as `max_seq_length` to `models.load`
-  (`None` = keep the per-role config default — chat 32768 / OCR None).
+  (`None` = backend default).
   Verified live 2026-09-03 against :8888.
 - `rag_uploader.py` — reads `validation/verified/<doc_id>/*.json` (one folder per
   doc), groups items by
@@ -286,7 +329,10 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   table) — plus a `Symbols:` line inlining local definitions for whichever of
   `A_g`/`b_w`/`b_o`/`N_u`/`β`/`α_s` that table actually uses, so the model
   stops hedging on symbols defined elsewhere. (12 table chunks, all
-  normalized + annotated.) Per-page ordering groups
+  normalized + annotated.) Figure chunks (2026-10-13) get the same
+  caption-folding treatment: `caption` is folded in front of the GLM
+  description (its plain words are what the model can query-match), and a
+  missing section anchor is backfilled from `figure_number`. Per-page ordering groups
   code + R-commentary + subsections: items sort by a numeric section tuple
   (R directly beneath its code, then subsections), fragments with no section
   inherit the nearest sectioned same-page predecessor, else the previous
@@ -306,7 +352,11 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   catches it back to `SystemExit` for the CLI. Added `list_kbs()`, `create_kb(
   name, description=None)`, `rename_kb(kb_id, name)` (posts `PATCH
   /api/rag/knowledge-bases/{kb_id}` `{name}` — verified the verb, no
-  create+reupload fallback needed), `delete_kb(kb_id)` (DELETE), and
+  create+reupload fallback needed), `delete_kb(kb_id)` (DELETE),
+  `list_docs(kb_id)` (GET `/api/rag/knowledge-bases/{kb_id}/documents` →
+  `[{id, filename, …}]`, empty on parse miss — drives the upload-overwrite
+  clash check), `delete_doc(document_id)` (DELETE
+  `/api/rag/documents/{document_id}`), and
   `docs_for_doc(doc_id)` (filter over `docs_from_verified` for single-doc
   uploads); `get_or_create_kb` now reuses `list_kbs`/`create_kb`.
   **Table math → clean Unicode (λ-drop fixed):** `_math_to_text` decodes
@@ -322,10 +372,11 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
 - `profiles.py` — generation settings store (stdlib only): one **global**
   default profile plus **per-model** overrides, persisted in `BASE/settings.json`
   (gitignored, `SETTINGS_PATH` module global so tests redirect it).
-  `DEFAULTS` = built-ins: `temperature 0.2`, `repeat_penalty 1.1`,
-  `max_tokens 12000`; `top_k`/`top_p`/`min_p`/`context_length` default `None`
-  (unset = inherit; per-request params resolving to None are OMITTED from the
-  `/v1/chat/completions` payload so sampling params stay off unless set;
+  `DEFAULTS` = **every built-in field defaults to None = omit** (the old
+  built-ins — `temperature 0.2`, `repeat_penalty 1.1`, `max_tokens 12000` —
+  are removed; per-request params resolving to None are OMITTED from the
+  `/v1/chat/completions` payload, so the app follows Unsloth's own
+  generation defaults and auto-tracks backend changes;
   `context_length` is **load-time only** — the model worker threads it into
   `models.load(max_seq_length=…)` and it applies on the next load, never a
   request param). Resolution order: `DEFAULTS <- global <- models[key]`.
@@ -334,6 +385,17 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   coerces numeric strings, drops unknown keys, treats `''`/null as unset
   (dropped), rejects NaN/Inf/garbage with `ValueError` (→ 400 via the routes),
   and drops empty per-model entries (that's the "clear override" action).
+  `unsloth_defaults()` (+
+  `_parse_unsloth_defaults`, cached `_UDEFAULTS`/`_UDEFAULTS_TTL` 300s)
+  fetches the backend's `/openapi.json` ChatCompletionRequest schema (no key
+  needed) and returns the API-level sampler defaults it declares — what the
+  backend applies when a field is omitted: `temperature 0.6`, `top_k 20`,
+  `top_p 0.95`, `min_p 0.01`, `repeat_penalty` (backend's
+  `repetition_penalty` property) `1.0`, `max_tokens None` = "until EOS";
+  raises (URLError/RuntimeError/KeyError) on failure — the route degrades to
+  `{}` (verified live 2026-09-05: `{"context_length":8704,"max_tokens":null,
+  "min_p":0.01,"repeat_penalty":1.0,"temperature":0.6,"top_k":20,
+  "top_p":0.95}` with gemma-4-12B resident).
   Model matching: exact key, or a key's base name (trailing `-GGUF` stripped)
   inside the model path — a resolved snapshot path like
   `granite-4.2-8b-Q6_K.gguf` matches the repo-id key
@@ -356,15 +418,19 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   are separately selectable; `unload(model_path, force=True)` posts to
   `/api/inference/unload` with `force_cancel_active:true` (kills
   non-cancellable in-flight generations; unknown/None path is a harmless no-op
-  — verified live); `load(model, variant=None, max_seq_length=None)` accepts a
+  — verified live); `status()` = raw `GET /api/inference/status` body
+  (`active_model`, runtime `context_length`, … — feeds the
+  unsloth-defaults route; `current_model` now routes through it);
+  `load(model, variant=None, max_seq_length=None)` accepts a
   `MODELS` key
   ("ocr"/"chat" -> its config path) or a literal path, posts `{model_path,
   force_reload:true, gguf_variant?, max_seq_length?}` — `variant` pins the
   quant via `gguf_variant` (falls back to `config.CHAT_GGUF_VARIANT` for the
   chat default), and `max_seq_length` comes from an explicit arg (the
-  profile's `context_length`, threaded by the app worker) or, when `None`,
-  the per-role config default: sent ONLY when the path equals the
-  chat/ocr config default; other paths get the backend default — then polls
+  profile's `context_length`, threaded by the app worker) or the per-role
+  config override — both per-role values are `None` now
+  (`CHAT_MAX_SEQ_LENGTH` / `OCR_MAX_SEQ_LENGTH`), so a load sends no
+  `max_seq_length` and the backend default applies — then polls
   status (~2s, up to 120s) until the target reports loaded — the backend may
   resolve a hub id to a local snapshot path, so readiness matches by GGUF
   filename suffix.
@@ -393,9 +459,8 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   No CLI action besides `--selftest`.
 - `orchestrator.py` — RAG + tool-calling Q&A **engine + CLI only, no HTTP server**
   (stdlib + urllib, no deps). Question from `--question` or stdin (both empty →
-  usage, exit 2; missing `UNSLOTH_API_KEY` → error, exit 1; `--max-tokens` default
-  12000 — capped so a reasoning model can't burn the whole window in COT and stop
-  empty; the system prompt also tells it to answer directly without a reasoning
+  usage, exit 2; missing `UNSLOTH_API_KEY` → error, exit 1; `--max-tokens`
+  default None — follows Unsloth's own token cap; the system prompt also tells it to answer directly without a reasoning
   preamble and, since 2026-10-08, to call a tool only when a number needs
   computing and to stop + answer immediately once all tool results are back
   (no further tool calls, no re-runs, no repetition). `run_loop(messages, tools, max_tokens, thinking=False)` →
@@ -403,9 +468,18 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   ordered `{"kind":...}` steps: `reasoning` whenever the backend emits
   `reasoning_content`, `message`, `tool_call` (name + raw args), `tool_result`
   (wrapper result or `{error}`), final `answer`); `answer_turn(user_turn, history,
-  kb_id, max_tokens=None)` → `(answer, trace)` with a `retrieval` step prepended when
-  `kb_id` is set (`None` → no retrieval; `max_tokens=None` → the resolved
-  profile's cap, applied in `chat()`); **no-KB sessions answer from general
+  kb_id, max_tokens=None, thinking=None)` → `(answer, trace)` with a `retrieval` step prepended when
+  `kb_id` is set (`None` → no retrieval; `max_tokens=None` → omitted,
+  Unsloth's own default applies); `thinking` overrides the per-query
+  policy: `None` = **hybrid** (default — ambiguous/judgment questions think on
+  the first pass, fast path otherwise, one-shot escalation on failure), `True` =
+  always think, `False` = never think (forced modes skip BOTH the hybrid
+  routing and the escalation — respected literally for any NON-EMPTY
+  answer). **Dead-end guard (2026-11):** in ALL modes an EMPTY first-pass
+  answer (the model burned its whole generation on thinking and emitted no
+  final text — the forced-on loop) retries ONCE with the OPPOSITE pass
+  (think→fast, fast→think) so a turn never ends on an empty bubble;
+  **no-KB sessions answer from general
   knowledge (2026-11):** when `kb_id` is None the context is
   `"(no knowledge base attached)"` and the system prompt swaps to
   `SYSTEM_PROMPT_BARE` (drops the RAG source-citation guardrails; tool/
@@ -427,8 +501,9 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   sources): ”), which granite followed verbatim. `chat(messages, tools, max_tokens=None,
   thinking=False)`
   resolves the loaded model's generation profile once via
-  `profiles.resolve(_loaded_model())` and sends `temperature`, `repeat_penalty`,
-  any set `top_k`/`top_p`/`min_p` (None params omitted from the payload),
+  `profiles.resolve(_loaded_model())` and sends every resolved param that
+  is set (`temperature`/`top_k`/`top_p`/`min_p`/`repeat_penalty`/`max_tokens`
+  — all others omitted, so Unsloth's own defaults apply),
   **and `enable_thinking: <thinking>` EXPLICITLY on every request** — the GGUF
   backend loads with thinking on (Studio-managed `chat_template_kwargs`), so an
   explicit per-query False is the only way to run the fast path; `answer_turn`
@@ -463,7 +538,9 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   burning the whole token budget) never reaches the UI/session. **Repetition fix
   (2026-09-03):** the chat payload carries `repeat_penalty: 1.1` (verified
   accepted live against :8888 — HTTP 200, no unknown-param rejection; the
-  fallback would have been `frequency_penalty: 0.5`), and the system prompt
+  fallback would have been `frequency_penalty: 0.5`; now sent only when
+  explicitly set via the Settings panel — the default follows Unsloth's own
+  penalty), and the system prompt
   gained two routing lines: re-run the tool with the same inputs when the user
   asks to break down/explain/verify a previous tool result (never recompute from
   memory), and "Ast" / "minimum shear reinforcement" / "minimum stirrup area"
@@ -474,7 +551,9 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   tools take d, or h with `cover_cg`, never total height h as d). `--selftest` is
   offline: tool-load, native + marker extraction, `_norm_args`, round-trip
   shapes, a `run_loop` trace-shape assert with `chat()` stubbed, and a chat
-  payload-shape assert (stubbed `_api` → `repeat_penalty == 1.1`).
+  payload-shape assert (stubbed `_api` → every unset generation param
+  absent — no `temperature`/`repeat_penalty`/`max_tokens`/`top_k`/`top_p`/
+  `min_p` keys).
 - `config.py` — `API_BASE` (default `http://localhost:8888`), `API_KEY` (env-only),
   `MODEL = "ggml-org/GLM-OCR-GGUF"` (OCR), `CHAT_MODEL =
   "ibm-granite/granite-4.2-8b-GGUF"` (chat), `CHAT_GGUF_VARIANT =
@@ -482,20 +561,27 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   only installed quant; the suffix goes in the load's `gguf_variant` field,
   never `model_path` — see the models-matching
   foot-gun under `models.py` for how the old granite-4.1
-  `UD-Q4_K_XL` default stalled on download), `CHAT_MAX_SEQ_LENGTH = 32768` (explicit
-  context-length override, same as Qwen needed; None → omit the load field),
+  `UD-Q4_K_XL` default stalled on download), `CHAT_MAX_SEQ_LENGTH = None`
+  (follow the backend default; the old 32768 override existed because
+  Qwen's backend default was 17408 — a per-model profile can still override
+  it via the Settings panel),
   `OCR_MAX_SEQ_LENGTH = None` (backend default), `UPLOAD_DIR`.
 - `ocr_engine.py` — `pdf_to_images(dpi=200, page_range=None)` (accepts a single
   `(s, e)` or a list of `(s, e)` pairs; clamped to the PDF, overlaps merged),
-  `parse_page_range(s)` (`"N"`/`"N-M"` -> tuple or `None`) and `parse_page_ranges(s)`
-  (comma-separated `2-3, 4-9` -> list of tuples or `None`; used by the app upload,
-  CLI `--pages` uses the single-range form),
+  `parse_page_range(s)` (`"N"`/`"N-M"` -> tuple or `None`; the separator
+  accepts ASCII `-`, en-dash `–`, or em-dash `—` so pasted ranges never 400)
+  and `parse_page_ranges(s)`
+  (comma-separated `2-3, 4-9` -> list of tuples or `None`; **exactly two bare
+  numbers, `"20, 30"`, mean the RANGE 20–30, `"20, 30, 40"` stays individual
+  pages** — user-confirmed; reversed `"30, 20"` -> None),
   `ocr_page`/`ocr_batch(workers=2, max_tokens_per_page=8192, on_progress=None)`
   (`on_progress(done, total)`
   fires after each completed page), `assemble_markdown`, and prompt constants
   `OCR_PROMPT`, `CAPTION_BAND_PROMPT` (caption crops — GLM drops/disfigures
   tiny regions under the generic prompt), `EQUATION_PROMPT` (draw-box equation
-  mode — output LaTeX math only, no tables/HTML). Timeouts were raised to
+  mode — output LaTeX math only, no tables/HTML), `FIGURE_PROMPT` (draw-box
+  figure mode — plain readable diagram description, no tables/HTML/LaTeX).
+  Timeouts were raised to
   600s (GLM-OCR f16-on-CPU read timed out at 120s; now GPU so fine). Payload is
   non-streaming chat completions — see note below. `max_tokens_per_page` default
   was 4096; most pages exceeded it (finish_reason="length" → re-send at 2×),
@@ -504,7 +590,10 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
 - `itemizer.py` — splits markdown on `--- Page N ---`, extracts equations
   (`$$...$$` / `\[...\]`), **pipe tables and HTML `<table>...</table>`** (added to fix
   GLM-OCR answering HTML tables; HTML converted to `|...|` markdown), inline math
-  `(\(...\)` / `$...$`). Item order is **document order**: every item
+  `(\(...\)` / `$...$`). Caption parsing: `parse_table_caption` on
+  `Table N—…` lines and `parse_figure_caption` on `Fig. N—…`/`Figure N …` lines
+  (`FIGURE_CAPTION_RE`; both return (caption, number-or-None), fall back to the
+  first non-empty line). Item order is **document order**: every item
   carries `order` (1-based document position, stamped BEFORE the priority
   sort — `_parse_page_body`'s kind/line sequence), and display/export sort
   by `order`; the type-priority sort (equation → table → text-math → text)
@@ -558,7 +647,38 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   `localStorage.theme`; the pages hard-code `data-theme="dark"` on `<html>`
   and an inline head script overrides it with the stored choice before first
   paint (anti-FOUC). The PDF preview (`#pageImg`) intentionally stays white in
-  both themes; `.trace`/`.toast` are already dark and stay hardcoded.
+  both themes; `.trace`/`.toast` follow the theme tokens like everything else.
+  **Visual refresh (2026-09-10):** the token palette was retuned for more contrast
+  between layers (dark: `--bg:#0b0f17` / `--surface:#131a26` / `--surface-hover:#243046`,
+  light: `--bg:#f5f7fa` / `--surface:#fff`) and gained new tokens consumed by both
+  page templates: `--surface-2` (a raised/inset layer, e.g. fieldsets and inputs),
+  `--accent-hover` (button hover state), `--accent-ring` (the `:focus`/`:focus-visible`
+  halo), `--shadow-1`/`--shadow-2` (card vs. popover elevation), `--radius-sm`/
+  `--radius`/`--radius-lg` (6/10/14px, replacing ad-hoc 4-6px radii), `--ok-tint`/
+  `--err-tint` (the subtle full-card background on verified/rejected items, alongside
+  their `--ok-border`/`--err-border` inset bar), and `--select-chevron` (a themed
+  data-URI dropdown arrow — the stroke color tracks `--muted` per theme, unlike a
+  hardcoded one). New shared rules here: `input:focus`/`select:focus`/
+  `textarea:focus` get an accent border + ring, `input[type=checkbox]` gets
+  `accent-color`, `button` gets a transform-on-`:active` press and a
+  `:focus-visible` ring, `.tabs` is now a padded pill container (`background`/
+  `border`/`border-radius` on the parent) with `.tabs a` as borderless inner pills —
+  **the `class="active"` value on the `<a>` itself is unchanged** (still
+  smoke-tested verbatim), only its rendering changed. `.toast` moved from a solid
+  fill to a card with a left accent/ok/err edge. No DOM, id, or route changes.
+  **Contrast fix (2026-09-10, follow-up):** white text on the plain `--accent` fails
+  WCAG AA in dark mode (3.68:1). Two new tokens split the job `--accent` was doing:
+  `--accent` stays the *border/ring/outline* color (`.tabs a` hover text, focus
+  rings, `.item.active`'s outline, `table.grid td.sel`) while `--accent-solid`/
+  `--accent-solid-hover` (`#2563eb`/`#1d4ed8` in both themes — dark's `--accent`
+  alone was too light for a white-text fill) are the *fill* color behind white
+  text: `.tabs a.active`, `#loadBtn`, `.msg.user`, `#sendBtn`, `#newBtn`,
+  `#settingsSave`, `.act.accept`, `#upKbBtn`, `#kbCreateBtn`. 5.17:1 (5.16:1 verified
+  via the WCAG relative-luminance formula). **This same pass also moved the shared
+  `button`/input/`select` rules from being duplicated per-page into this file** (see
+  the `index.html`/`chat.html` entries below for what that fixed) — `_header.html` is
+  now genuinely the single source of truth for the control layer, not just the
+  tokens.
 - `templates/index.html` — single-page JS UI. Includes `_header.html` (`
   tab="ocr"`, `page_model="ocr"`; the old inline `<header>` is now a card row
   holding the doc pill / counter / OCR-coverage / OCR-more inputs). List branch
@@ -579,6 +699,9 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   The item counter always reflects the current page — pages with no items (e.g.
   outside the OCR page range) show "no items on page N", never a stale count from
   a previously-viewed page.
+  `render()` stamps the live page onto each item before `renderItem`
+  (`{...it, page: pg.page}` — the same stamp `flatItems()`/bulk use, so the
+  card's meta reads "page N" instead of "page undefined").
   Server page items arrive in priority (id-assignment) order; `render()` calls
   `sortItems()` first, which re-sorts each page by `order` (missing order →
   Infinity, so legacy items keep their array order after ordered ones — stable
@@ -593,13 +716,17 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   same list, defaulting to first/last when off it). When the filter is on, the page
   selector and `#pageTotal` show the *position within the OCR'd pages* (`pageLabel()`,
   e.g. "2 of 3") instead of the absolute page number; `#pgInfo` keeps the actual page
-  for reference. Four per-page bulk buttons reuse
-  the existing `/bulk` route with computed `item_ids`: `bulkAcceptMath`/`bulkAcceptText`
-  and `bulkRejectMath`/`bulkRejectText` (→ `bulkByType(action, kind)`) accept/reject
-  every current-page text item
-  with/without `has_inline_math` and flip finalized items like single-item actions (accept
+  for reference. There are no show-math/show-text toggles anymore — **text
+  and inline-math text are one "text" category** (the `has_inline_math` flag
+  still rides on the data): every text item always renders, `label`/`badgeClass`
+  return "text"/"badge" for both (the purple `math` badge is now the `figure`
+  badge), and two per-page bulk buttons reuse
+  the existing `/bulk` route with computed `item_ids`: `bulkAcceptText`/`bulkRejectText`
+  (→ `bulkByType(action)`) accept/reject
+  every current-page text item (inline math included)
+  and flip finalized items like single-item actions (accept
   converts rejected→verified, reject converts verified→rejected; same-state items
-  skipped; works regardless of the showMath/showText toggles; alerts
+  skipped; alerts
   "nothing to accept/reject on this page" when empty).
   **Note:** `location.reload()` refreshes DOC after OCR job completes (deliberate;
   the old inline `const DOC = ([^;]+);` regex broke on `;` in content).
@@ -626,11 +753,20 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   Their Edit + Accept editor adds pre-filled eq-number / eq-letters inputs
   (emptying a field clears that part of the key) so the key is edited in its own
   fields, not derived from the equation text. The draw-box toolbar has a type
-  selector (`bboxType`: `auto` default / `equation` / `table` / `text + inline
-  math`), forwarded as the `type` field on the `/bbox_ocr` POST (the caption-box
-  flow is untouched). Every item has a Delete button — `confirm()` then POST
+  selector (`bboxType`: `auto` default / `equation` / `table` / `text` /
+  `figure`), forwarded as the `type` field on the `/bbox_ocr` POST (the caption-box
+  flow is untouched). Figure items render caption + GLM description like tables
+  (caption via the same "Draw caption box" drag — the caption route accepts
+  figures), and math-free/equation draw-box content lands as bare LaTeX
+  (delimiters stripped server-side). Every item has a Delete button — `confirm()` then POST
   `/item/<doc>/<item>/delete`, re-render, no cursor advance; the item and its
   verified/rejected copies are removed.
+  The "OCR more" input placeholder/hints use the new grammar ("e.g. 5-15 or
+  20, 30 (range)") — `20, 30` means the RANGE 20–30 (see `parse_page_ranges`).
+  The **Upload verified → KB** handler (`#upKbBtn`) now handles a 409 from
+  `/api/kb/<id>/upload`: it `confirm()`s over the clashing filenames
+  ("… already in this KB. Overwrite?") and re-sends with `overwrite: true`;
+  cancel leaves the KB untouched.
   **Theming (2026-10-10):** every hardcoded color here was replaced with the
   shared tokens from `_header.html` (`body` → `--text`, `.card`/`.item` →
   `--surface`, badges → `--ok-bg`/`--warn-bg`/`--purple-bg`/`--gray-bg`
@@ -641,6 +777,32 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   overlay (drawn on the white page). The local `:root { --line … }` block is
   gone; `<html>` carries `data-theme="dark"` + the anti-FOUC head script.
   No route/API change — the smoke-tested DOM ids are untouched.
+  **Visual refresh (2026-09-10):** cards, `.item`s and buttons picked up
+  `--radius-lg`/`--radius`/`--shadow-1` for real elevation. `.item.verified`/
+  `.item.rejected` get both a subtle `--ok-tint`/`--err-tint` full-card background
+  *and* a 3px inset left status bar, so pending vs. verified vs. rejected reads at
+  a glance (an earlier pass on this same day shipped the bar without the tint,
+  which flattened that distinction to a 1px border color — fixed same-day before
+  it reached anyone). `.item.active` layers its accent ring on top via a combined
+  `box-shadow` list instead of replacing the status color (`.item.verified.active`/
+  `.item.rejected.active` handle that combination explicitly). `#pageImg` gained
+  `--shadow-2` **and** a `1px solid var(--line)` hairline so the (intentionally
+  white) PDF page reads as a sheet floating on the canvas in both themes — the
+  shadow alone was too faint against the light theme's near-white background.
+  `#upKbBtn`, `#kbCreateBtn` and `.act.accept` are accent-filled (via
+  `--accent-solid` — see the `_header.html` contrast-fix note); destructive ones
+  (`.act.reject`, `.act.del`, `.discardList`, `#discardBtn`) get an err-tinted
+  border/hover. The old inline-style-substring selector
+  `table[style*="border-collapse"]` (styling the Documents/KB tables) was replaced
+  with `.card table` — it keyed off an inline `style` attribute string, which would
+  have silently stopped matching if that inline style were ever reformatted;
+  `.card` scopes it correctly since the item-editor `table.grid` lives under
+  `.item`, never `.card`. **The page's own `button`/input/`select` rules were
+  removed** — they now come from `_header.html` (single source of truth), which is
+  also what fixed the ⚙ Settings number-input styling: the version of this rule
+  that briefly lived only in `index.html` never covered `chat.html`, where every
+  number field in Settings actually lives. Still styling-only — no markup, id, or
+  behavior changes.
 - `templates/chat.html` — chat page (`tab="chat"`; loads a session from
   `?s=<sid>`, `const SESSION` is `null` when none — routes guard that).
   Sidebar: sessions list (click to switch) + new / rename / delete;
@@ -682,11 +844,23 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   dropdown switch made without sending, and every assistant message renders a
   muted `via KB: <name>` / `no KB` tag (`kbTag()` reads the persisted
   `kb_name`/`kb_id` on each message, so labels survive a reload).
-  **Developer mode** toggle: when on, the message POST carries
-  `developer:true` and each reply gets a collapsible `▸ developer trace`
-  `<pre>` (escaped monospace, no MathJax/markdown) with rows for retrieval
-  chunks / reasoning / messages / tool calls+results. Traces are live, never
-  persisted; sessions render from the server's JSON.
+  **Developer mode** toggle (persisted traces, 2026-11): the checkbox is a pure
+  client-side view toggle — the server stores the retrieval/reasoning/message/
+  tool-call trace on EVERY assistant message and the client renders a
+  collapsible `▸ developer trace` `<pre>` (escaped monospace, no
+  MathJax/markdown) right after ANY assistant message that carries one while
+  the toggle is on (`renderThread` re-renders on toggle, so past messages
+  show their traces too). `renderTrace(trace, afterEl)` inserts the tracewrap
+  immediately after the given message element. The request body no longer
+  carries `developer`; `sendMessage` just reloads the thread from the
+  response session. Messages saved before this change have no trace and show
+  none (traces can't be recomputed without re-running the model).
+  **Thinking-mode toggle** (2026-11): `#thinkBtn` in the rowbar cycles
+  hybrid → on → off (`🧠 auto` / `🧠 on` / `🧠 off`, tooltip explains each)
+  and persists per-session via PATCH `{thinking}` (init from
+  `SESSION.thinking`, default hybrid); the send POST carries the current
+  value as `thinking` so a turn uses exactly the mode shown. Server maps
+  `hybrid → None` (per-query routing), `on → True`, `off → False`.
   **⚙ Settings panel** (below the KB row, `#settingsBtn` toggles
   `#settingsPanel`; chat page only): a **Global** fieldset with the 7
   generation params (`temperature`/`top_k`/`top_p`/`min_p`/`repeat_penalty`/
@@ -694,8 +868,14 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   model `<select>` filled from `GET /api/model` `available`, de-duped by path
   since quants repeat the repo id; same 7 fields; **clear override** empties
   the fields and saves — an all-empty entry is dropped server-side). Empty
-  input = unset/inherit; a note reads "context_length applies on next model
-  load". Save posts the full shape to `/api/settings` and toasts on success;
+  input = inherit; every field shows the backend's own value as an inline
+  hint — `(unsloth's default: 0.6)` etc., fetched from
+  `/api/settings/unsloth-defaults` on each panel open (`loadUdef()`, muted
+  `.udef` span injected into the label; `max_tokens` hint reads "until EOS",
+  `context_length` shows the loaded model's runtime context as "— this
+  load"; a failed fetch = no hints, never blocks the panel); a note reads
+  "context_length applies on next model load". Save posts the full shape to
+  `/api/settings` and toasts on success;
   on open the panel refreshes both settings and the installed-model list from
   the server.
   **Chat-first full-height layout + theming (2026-10-10):** `.wrap` is now
@@ -713,6 +893,28 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   overflow:auto; z-index:50`, shadow) — the open/close `hidden` toggle JS is
   unchanged. All colors migrated to the shared tokens in `_header.html`;
   the `:root { --line … }` mini-block was removed.
+  **Visual refresh (2026-09-10):** `.msg` bubbles moved to `--radius-lg` with one
+  squared corner for directionality (bottom-right on `.msg.user`, bottom-left on
+  `.msg.assistant`); `.msg.assistant` gained a `1px solid var(--line)` edge so it
+  separates from the thread background. `.trace` no longer hardcodes
+  `background:#0f172a` (that value read as near-black-on-near-black once `--bg`
+  darkened past it) — it now uses `--code-bg` + a `--line` border, so it still
+  reads as a distinct block without being pinned to one theme — its text color
+  later moved from `--muted` to `--text` too (a same-day contrast fix: `--muted`
+  on `--code-bg` was a marginal 4.47:1 in light theme at 12px monospace).
+  `.toast` styling lives in `_header.html` (see that entry). `.sess.active`
+  gained a left accent indicator distinct from plain `:hover` (previously
+  identical). `#sendBtn`, `#newBtn`, `#settingsSave` and `.msg.user` are
+  accent-filled via `--accent-solid` (see the `_header.html` contrast-fix note —
+  plain `--accent` under white text fails AA in dark mode). `#settingsPanel`
+  fieldsets sit on `--surface-2` instead of the browser's default groove box.
+  **This page's own `button`/input/`select` rules were removed** (including the
+  `select` chevron, which now comes from the themed `--select-chevron` token) —
+  they come from `_header.html` now, which is what actually fixes the ⚙ Settings
+  number-input styling: `input[type=number]` had briefly been added only to
+  `index.html`'s copy of this rule, missing the file where every Settings number
+  field lives.
+  Styling-only — no markup, id, or behavior changes.
 - `validation/` — `pending/` (docs), `verified/<doc_id>/`, `rejected/<doc_id>/` (per-item JSON), `uploads/<doc_id>/` (pdf, md, page PNGs).
 - `functions/beam_calc.py` — self-contained, **stdlib-only** (math; numpy/matplotlib/argparse/yaml dropped) ACI 318M-19 beam shear/flexure calcs extracted from the BeamValidation repo
   (github.com/Siboi420/BeamValidation, commit `668be3670dc8ba065f215a0ca1b59eb9e3bd8ca5`, `scripts/RCBeam_moment_capacity.py`). Public: `min_shear_reinf(b_w, f_c, f_yt)` → Av,min per metre (mm²/m, §9.6.3.3, `max(0.062·√f'c·b_w/f_yt, 0.35·b_w/f_yt)·1000`); `shear_capacity(b, d=None, f_c=None, A_v=0, s=0, f_yw=0, A_s=None, V_u=None, M_u=None, h=None, cover_cg=None)` → wrapped `compute_aci_shear` — effective depth is **d, or h with cover_cg (d = h − cover_cg), never both (loud XOR ValueError), rejected cover_cg ≥ h**, Vc rows: simplified `§22.5.5.1(a)`; detailed `(b)` only when stirrups ≥ Av,min AND A_s+V_u+M_u given, capped `§22.5.8.5.3`-adjacent `0.29·λ·√f'c·b·d`; **size-effect `(c)` when stirrups < Av,min (or absent) and A_s given: `λ_s = min(√(2/(1+d/250)), 1)` (§22.5.5.1.3), `V_c = 0.66·λ_s·λ·ρ_w^⅓·√f'c·b·d`**; Av,min comparison via `min_shear_reinf(b, f_c, f_yw)·s/1000` (reused, not duplicated); stirrups adequate ⇔ that inequality; φ_v=0.75; returns `Vc_criterion` ("row (a)"|"row (b)"|"row (c)") + `lambda_s` on top of the numeric keys; `flex_capacity(b, d=None, A_s=None, f_c=None, f_yl=None, h=None, cover_cg=None)` → wrapped `compute_aci_flexure` (stress block §22.2.2.1, β₁ §22.2.2.4.3, φ Table 21.2.2), same d/h XOR path. Constants EPSILON_CU=0.003, Es=2e5, λ=1.0.
@@ -727,9 +929,10 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
 - Timeouts in `ocr_engine.py` are 600s.
 - Itemizer handles **HTML tables** (GLM-OCR sometimes emits HTML instead of markdown).
 - Auto-OCR on PDF-only upload works (blue bar, polls, reloads, `?ocr=1`).
-- "OCR'd pages only" filter + per-page bulk accept/reject (inline math / text) work via
+- "OCR'd pages only" filter + per-page bulk accept/reject work via
   the existing `/bulk` route — bulk accept/reject now flip finalized items exactly like
-  single-item actions (skip still never touches them).
+  single-item actions (skip still never touches them). Text and inline-math
+  text are one **text** category: `Accept text` / `Reject text` cover both.
 - Upload accepts an optional `ocr_pages` range — single (`5`, `1-3`) or
   comma-separated (`2-3, 4-9`); stored on the pending doc JSON as a list of
   `[start, end]` pairs and honored by the initial OCR run only (re-OCR of extra
@@ -807,17 +1010,22 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   stubs deleted, remaining: granite-4.2-8b (Q6_K), GLM-OCR (Q8_0),
   takes a literal model path (+ optional `variant` from the dropdown) with
   variant-aware "already loaded" matching.
-  Smoke test now 238 checks.
+  Smoke test now 273 checks.
 - **Generation profiles (implemented 2026-09-15):** a global default profile
   + per-model overrides in `BASE/settings.json` (gitignored), applied to
-  every chat session automatically via `profiles.resolve` — built-ins
-  (`temperature 0.2`, `repeat_penalty 1.1`, `max_tokens 12000`) <- global <-
-  per-model. Sampling params resolving to None are omitted from the
-  `/v1/chat/completions` payload; `context_length` is load-time only
+  every chat session automatically via `profiles.resolve` — **all built-in
+  fields default to None = omit** (follows Unsloth's own generation defaults;
+  the old built-ins — `temperature 0.2`, `repeat_penalty 1.1`, `max_tokens
+  12000` — are removed) <- global <-
+  per-model. Any param resolving to None (incl. `max_tokens`) is omitted from
+  the `/v1/chat/completions` payload; `context_length` is load-time only
   (threaded into `models.load(max_seq_length=…)` by the model worker, takes
   effect on the next load). `/api/settings` GET/POST persists the file
   (NaN/Inf/garbage -> 400); the chat page's ⚙ Settings panel edits both
-  sections. `TEMPERATURE`/`MAX_CHAT_TOKENS` are gone (moved into
+  sections and shows the backend's own value per field
+  (`/api/settings/unsloth-defaults` — sampler defaults from the backend
+  OpenAPI schema + the loaded model's runtime context, degraded to `{}` on
+  failure). `TEMPERATURE`/`MAX_CHAT_TOKENS` are gone (moved into
   `profiles.DEFAULTS`); `ocr_engine` sampling and RAG retrieval `top_k` are
   untouched.
 - **Per-query thinking toggle (implemented 2026-09-15):** `chat()` sends
@@ -848,13 +1056,41 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
 - **Chat repetition loop + "minimum Ast" routing (fixed 2026-09-03):** the
   8B-model degenerate repeated-line loop (session c1f3db7e07a0) is addressed at
   the sampling level (`repeat_penalty: 1.1` on the chat payload, verified
-  accepted live) plus prompt routing (re-run the tool on "break down" asks;
+  accepted live; now sent only when explicitly set — the default follows
+  Unsloth's own penalty) plus prompt routing (re-run the tool on "break down" asks;
   "Ast" → `min_shear_reinf`). Live-verified: "what is the minimum Ast for
   b_w=350, f_c=28, f_yt=420?" calls `min_shear_reinf` with those exact args and
   answers 291.7 mm²/m. `_truncate_repetition` remains as the safety net. No new
   tool (the `min_flex_steel` idea was dropped — YAGNI; `min_shear_reinf` covers
   it); tool count was 3 until the design_beam tool below.
 - **`design_beam` optimizer tool (implemented 2026-10-08, live-verified):** ONE tool that sizes a beam — given factored `V_u` (kN), `M_u` (kN·m) and section bounds `max_b`/`max_h` (mm), a deterministic full-grid search inside `beam_calc.design_beam` returns the cheapest feasible `{b, h, d, f'c, long_bar, stirrup_bar, s}` + top-5 ranked + reason. Tool count 3 → **4**. Offline checks in `test_shear_tools.py` (19 → **28 checks**): pure-shear `V_u=50` → `250×350×20, D19×1` @ ~21.8 $/m (strictly cheaper than the previously-verified b=300,d=500,f'c=30 class); `M_u=200` binds flexure (`250×350` rejected for every f'c; optimum `250×550×20, D16×6`); d-formula, Vs/spacing limits, bound iteration, infeasible-with-reason, cost-ranked determinism, wrapper array/object validation. **Two bugs found + fixed during the first live runs (2026-10-08):** (1) `rate_conc` grade keys arrive as JSON strings (`"20": 100`) and were silently **ignored** (`rates[f_c]` int lookup missed) — the custom concrete cost fell back to the default rate and the answer's cost came out wrong ($742.89 vs the true $736.59 at the same rates); now `int(k)`-normalized with a loud ValueError for non-numeric keys, and the test asserts the custom rate actually lands in `cost_concrete`; (2) `_pick_stirrups` **rejected** any combo whose exact demand spacing exceeded `s_max` — but small positive `V_s,req` is exactly where minimum stirrups at `s_max` already suffice (s_demand > s_max ⇔ Vs@max ≥ V_s,req) — so the search dropped feasible, cheaper designs and returned a sub-optimal optimum (e.g. it claimed the default-rates optimum was 300×550/D16×5 @ $40.70 when the true optimum after the fix is `250×600×20, D25×2` @ **$34.71**; b=250×600 was wrongly infeasible before). **Live re-verification (gemma-4-12B, 2026-10-08):** the custom-cost question (Vu=120, Mu=180, max 350×600, "concrete 100/m³, steel 50/kg") → one `design_beam` call with `rate_conc:{20:100,…,40:100}`, `rate_steel:50` (gemma also chose `f_y=400`, an accepted optional), tool optimum `250×600×25, D25×2, D10@274` @ **$711.08** (`cost_concrete=15.00` — the custom rate provably applied), answer reports it verbatim (~1 min wall, well under the granite loop times). **Live (granite-4.2, earlier same day):** the default-rates question converged in the ideal 2-generation shape (`message → tool_call → tool_result → message → answer`) in ~2 min wall (118.6s at ~4.5 tok/s on the 2080 Ti) after the system-prompt stop-condition; the ~16-min/8-pass 502 loop hasn't recurred, but it was stochastic model looping, so one sample proves convergence, not prevention; the structural bounds remain the 8-iteration cap → 502 + repeat_penalty + unload-with-force_cancel_active reset. `orchestrator._api` still has no HTTP timeout — a wedged backend hangs a /messages POST indefinitely (bit us twice 2026-10-08; fixed by the reset, not yet by code).
+- **`"20, 30"` = range 20–30, smart dashes accepted (2026-10-13):** the
+  accidental behavior (a flat int list misread by `pdf_to_images` as one
+  `(20, 30)` range) is now the documented meaning — `parse_page_ranges("20, 30")`
+  → `[(20, 30)]` (reversed `"30, 20"` → None → 400); `"20, 30, 40"` stays
+  individual pages; the range separator accepts ASCII `-`, en-dash `–`, and
+  em-dash `—`. The incremental `/ocr` route now builds `new_pages` as
+  `[(p, p)]` pairs so a flat int list can never be misread as a range.
+- **Text + inline math merged in the UI (2026-10-13):** no more `showMath`/
+  `showText` toggles or math/text bulk split — all text items always render as
+  one **text** category and `bulkAcceptText`/`bulkRejectText` cover inline
+  math too. `has_inline_math` stays on the data; KB exports unchanged (model
+  readability untouched).
+- **Figure item type (2026-10-13):** draw-box type `figure` runs `FIGURE_PROMPT`
+  (plain readable description), appends a `figure` item with
+  `has_inline_math`; the caption route accepts figures via `parse_figure_caption`
+  (`caption` + `figure_number`), `apply_action` exports `figure_number`, and
+  `rag_uploader` folds the caption into figure chunks + backfills the section
+  from `figure_number`.
+- **Draw-box content is clean (2026-10-13):** equation/text/figure kinds strip
+  ALL HTML tags (`HTML_TAG_RE`), and drawn equations keep BARE LaTeX — GLM's
+  `$$`/`$`/`\[`/`\]`/`\(`/`\)` delimiters are stripped before `eq_refs` so
+  `(a)` / `(22.5.1.10a)` markers still capture. Forced `table` draws still keep
+  the raw text (the wrapper may be the only structure).
+- **KB upload overwrite (2026-10-13):** `/api/kb/<id>/upload` lists the KB's
+  documents first; a same-named `{doc_id}.md` → 409 `{existing:[…]}` with
+  nothing uploaded (all-or-nothing); the UI `confirm()`s and re-sends with
+  `overwrite: true` (delete-then-reupload). `"__all__"` follows the same rule.
 - **Voice / AIRI roadmap (later):** docs-only this round (`docs/voice-roadmap.md`);
   no voice code or new deps. Target: browser mic → STT → chat session store →
   `orchestrator.answer_turn` → TTS → playback, with planned `POST /api/voice/stt`
@@ -885,7 +1121,8 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   meanwhile. No SSE this round.
 - **`__all__` KB upload reads the machine's real `validation/verified/`**: the
   smoke test points `rag.VERIFIED_DIR` at a temp dir; the route itself is
-  intentionally broad (all verified docs).
+  intentionally broad (all verified docs). Its overwrite check is
+  all-or-nothing: a clash anywhere → 409 before any doc uploads.
 - **Active generations**: non-streaming chat calls (what ocr_engine.py sends) are NOT
   cancellable via `POST /api/inference/cancel` (returns `cancelled: 0`, they're not
   registered). The working kill is unload with `force_cancel_active: true`. If you need
@@ -915,9 +1152,10 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
 
 ## Tests / verification
 
-- `python3 test_itemizer.py` — 73 itemizer assertions.
+- `python3 test_itemizer.py` — 76 itemizer assertions (incl. `parse_figure_caption`
+  — dotted number + em-dash + fallback).
 - `python3 functions/test_shear_tools.py` — 28 hand-calc checks for the `functions/` shear/flexure tools (Av,min mm²/m, simplified Vc, row (c) size-effect Vc incl. λ_s + ρ_w, adequate-stirrup rows (a)/(b), partial stirrups → row (c) + V_s, d↔h/cover_cg equivalence for shear and flex, d-resolution errors (XOR/neither/cover≥h), row (a) fallback, wrapper shape + unit/basis incl. h-path, validation error paths; plus 9 `design_beam` checks: pure-shear optimum 250×350×20 D19×1 (with the stirrup-clamp regression guard: s == s_max == d/2 and Vs > 0) cheaper-or-equal to the b=300,d=500 class, min-stirrup path vs Av,min, flexure gate binds (φM_n ≥ M_u, A_s ≥ As,min, no 250×350 row at M_u=200, optimum 250×550×20 D16×6), d = h − cover − φ_long/2 (incl. custom cover), Vs ≤ 0.66·√f'c·b·d + s ∈ [100, s_max] + s_max switch, bound/step iteration (max_b=385 → b ≤ 385), infeasible → `[]` + reason (V_u=300 and M_u=900 cases), cost-ranked top-5 determinism, wrapper registration + array/object validation errors + string-key `rate_conc` applied (cost_concrete equals the custom rate·b·h/1e6) + non-numeric grade key → ValueError; plain asserts + PASS/FAIL, exit non-zero on failure.
-- `python3 smoke_test.py` — 238 end-to-end checks via Flask test client (no live OCR,
+- `python3 smoke_test.py` — 273 end-to-end checks via Flask test client (no live OCR,
   no backend; `rag_uploader._api`, `models.current_model/unload/load/list_models`,
   and `orchestrator.answer_turn` stubbed where they'd hit :8888):
   the original 132 assert `?ocr=1` redirect, no-key OCR error,
@@ -934,8 +1172,10 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   pending, drawn-box items re-attached);
   the new 54 add session CRUD (create → list → rename → kb_id set/clear →
   delete, 400 on blank/no name, 404 on missing/malformed sid), chat message
-  route (echo answer, no `trace` key without developer, history persisted with
-  contents, `developer:true` returns the expected trace kinds, session `kb_id`
+  route (echo answer, no top-level `trace` key on the POST, every assistant
+  message carries its own persisted trace with the expected kinds on the POST
+  response AND the session GET, history persisted with
+  contents, session `kb_id`
   threaded through `answer_turn`, message-body `kb_id` override + persist,
   assistant messages tagged `kb_id`/`kb_name` — raw-id fallback, display-name
   resolution, null-KB — 400 empty content, 404 missing session),
@@ -978,9 +1218,54 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   `#thread` + `#inputRow` + `#settingsWrap` (+ `#settingsPanel`/
   `#settingsBtn` nested) and preserves `modelSel`/`loadBtn`/`settingsSave`/
   `moSel`/`g-context_length`/`kbSel` + tab links + the marked CDN.
+  the new 4 (238 -> 242) add persisted developer traces: the chat message
+  route stores the trace on every assistant message (no `developer` body
+  field, no top-level `trace` key — the trace lives in
+  `session.messages[].trace`), `sessions_list` strips `trace` keys from the
+  sidebar entries while `GET /api/chat/sessions/<sid>` and the message POST
+  keep them, `?s=<sid>` `/chat` renders the trace-laden session
+  (`"trace"`/`"retrieval"` present in the embedded tojson), and the
+  chat.html dev toggle re-renders the thread so every assistant message with
+  a trace shows its collapsible trace while the toggle is on.
+  the new 8 (242 -> 250) add the thinking-mode toggle: session create
+  defaults to `thinking: "hybrid"` (GET carries it), PATCH `thinking` set/
+  coerce-invalid-to-hybrid/reset, and the message route threads the mode
+  into `answer_turn` — unset → `None` (hybrid), session `"on"` → `True`,
+  `"off"` → `False`, message-body `thinking` overrides the stored mode and
+  persists, and a forced-on turn still persists its trace.
+  the new 20 (250 -> 270) add the review-tool batch (2026-10-13): page-batch
+  syntax (`parse_page_ranges("20, 30") == [(20, 30)]` a range not two pages,
+  `"20, 30, 40"` → individual pages, reversed pair → None, en/em-dash ranges
+  accepted in both parsers), `pdf_to_images` semantics (tuple-list `[(1,1),
+  (3,3)]` → pages 1,3 only vs flat `[1,3]` → range 1..3 — documents the
+  fixed accidental-range bug), header renders (text bulk accept/reject present,
+  `bulkAcceptMath` + `showMath`/`showText` gone, `value="figure"` present),
+  `append_bbox_item` figure kind (type + tail order), draw-box equation
+  content is BARE LaTeX (HTML tags AND `$`/`$$` delimiters stripped while
+  `eq_num`/`eq_letters` survive — incl. a `$$…$$`-wrapped case with `(a)`
+  markers), bbox route `type="figure"` passes validation (502 on keyless
+  OCR, not 400), and KB upload overwrite (fake `existing_docs` list:
+  empty → 200, `smoke.md` present → 409 `{existing:["smoke.md"]}` with
+  NOTHING uploaded, `overwrite: true` → 200 + a
+  `DELETE /api/rag/documents/…` call, `__all__` clash → 409). The no-key
+  path is now deterministic even when the shell carries `UNSLOTH_API_KEY`:
+  the test also scrubs `ocr.API_KEY` (config read the env at import — the
+  old pop only cleared `os.environ`, so a keyed shell leaked a real OCR call).
+  the new 3 (270 -> 273) add the unsloth-defaults hint source
+  (2026-09-05): `GET /api/settings/unsloth-defaults` merges a stubbed
+  `profiles.unsloth_defaults` ({temperature 0.6, top_k 20, top_p 0.95,
+  min_p 0.01, repeat_penalty 1.0, max_tokens None}) with a stubbed
+  `models.status` context_length 8704, degrades to `{}` when both stubs
+  raise, and `/chat` carries the `/api/settings/unsloth-defaults` fetch
+  URL (Settings hints are rendered client-side).
 - `python3 profiles.py --selftest` — offline: defaults/global/per-model
-  resolution (per-model beats global beats built-ins), resolved-snapshot-path
-  matching against a repo-id key (base name, `-GGUF` stripped), sanitize
+  resolution (per-model beats global beats built-ins; the defaults assert
+  all-`None` — every field inherits Unsloth), the backend-declared
+  defaults parser (`_parse_unsloth_defaults` on a canned OpenAPI doc →
+  temperature 0.6 / top_k 20 / top_p 0.95 / min_p 0.01 / repeat_penalty
+  1.0 / max_tokens None, the `repetition_penalty` property mapping),
+  resolved-snapshot-path matching against a repo-id key (base name, `-GGUF`
+  stripped), sanitize
   (numeric-string coercion, unknown-key drop, empty/null -> dropped,
   NaN/Inf/garbage/fractional-int -> ValueError, empty per-model entry dropped,
   non-object sections rejected), and corrupt-file -> defaults never raise.
@@ -994,10 +1279,11 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   checks (8× repeated 60-char line truncated to prefix + note; clean text,
   short lines, and 3× repeats pass through untouched) and chat-payload
   asserts with `_api` + `profiles.load_settings` stubbed (defaults:
-  `temperature 0.2`, `repeat_penalty 1.1`, `max_tokens 12000`, no
-  top_k/top_p/min_p keys when unset; override: global `temperature 0.7` +
+  **every generation param absent** — no temperature/repeat_penalty/
+  max_tokens/top_k/top_p/min_p keys, only structural fields plus
+  `enable_thinking: false`; override: global `temperature 0.7` +
   `top_k 33` and per-model `min_p 0.05` flow into the payload, unset
-  `repeat_penalty` keeps the default, `None` max_tokens -> profile default;
+  `repeat_penalty` and `None` max_tokens stay absent;
   `enable_thinking` EXPLICIT per request — default chat() sends false,
   explicit `thinking=True` sends true) and `answer_turn` routing/retry
   decisions with `run_loop` + `retrieve` stubbed (parameter-extraction
@@ -1006,15 +1292,24 @@ Source PDF -> /upload (PDF-only -> auto-OCR via ?ocr=1; optional ocr_pages="2-3,
   calc-style no-keyword question answered without a tool call → fast then
   retry; **no-KB (kb_id=None) sessions use `SYSTEM_PROMPT_BARE` and the
   "no knowledge base attached" context on every pass, KB sessions use the
-  RAG `SYSTEM_PROMPT` + the retrieved chunk text**).
+  RAG `SYSTEM_PROMPT` + the retrieved chunk text**; forced overrides: a
+  calc-style question with `thinking=False` runs ONE fast pass with no
+  escalation and an ambiguous question with `thinking=True` runs ONE
+  thinking pass, no retry — the explicit mode is respected literally;
+  the dead-end guard: an empty answer flips ONCE to the opposite pass in
+  forced off (fast→think), forced on (think→fast), and hybrid ambiguous
+  (think→fast), so no mode can end a turn with an empty answer).
   No HTTP-handler block — the server is gone.
 - `python3 rag_uploader.py --selftest` — offline grouping/ordering/Unicode/empty-skip
-  checks (unchanged but now with `_api` raising RuntimeError).
+  checks (unchanged but now with `_api` raising RuntimeError), plus figure
+  chunks: a `figure` item on doc "b" renders `## page 3 figure — 22.5.1` with
+  the caption folded in front of the description.
 - `python3 models.py --selftest` — offline: `MODELS` wiring + `load("chat")`
-  payload shape (`model_path`/`force_reload`/`max_seq_length=32768`,
+  payload shape (`model_path`/`force_reload`, **no `max_seq_length`** —
+  `CHAT_MAX_SEQ_LENGTH` is None so the backend default applies,
   `gguf_variant` present for the chat default; explicit `variant` on a
   literal path wins over the config pin; explicit `max_seq_length=4096` on
-  a chat load wins over the 32768 config default while the variant pin
+  a chat load wins over the per-role override while the variant pin
   still applies), literal
   path `load("some/local/model-GGUF")` posts that path with no
   `max_seq_length`/`gguf_variant`, and `list_models()` hits `GET
